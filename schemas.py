@@ -1,4 +1,4 @@
-# schemas.py
+# schemas.py - Updated for Pydantic 2.4.2
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
