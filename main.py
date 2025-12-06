@@ -1,16 +1,21 @@
+# main.py
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from typing import List
-import models, schemas, crud
-from database import SessionLocal, engine, Base
+from fastapi.responses import JSONResponse
+from database import database, engine, Base, get_db
+from models import CoffeeProduct, CartItem, Order, AdminUser
+import schemas
+import crud
+from admin_api import router as admin_router
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import time
+from typing import List
+import traceback
 
-# Create tables FIRST
+# Create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -22,13 +27,16 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# KHQR Configuration (with better error handling)
+# Include admin router
+app.include_router(admin_router)
+
+# KHQR Configuration
 KHQR_AVAILABLE = False
 khqr = None
 BAKONG_ACCOUNT = "muoyhak_thyy@wing"
@@ -63,73 +71,82 @@ except Exception as e:
     print(f"⚠️ KHQR initialization failed: {e}")
     print("🔄 Running in demo mode")
 
-# Dependency to get DB session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Create sample data
-def create_sample_data():
-    db = SessionLocal()
-    
-    # Check if products already exist
-    existing_products = db.query(models.CoffeeProduct).count()
-    if existing_products == 0:
-        sample_products = [
-            models.CoffeeProduct(
-                name="Mondulkiri Arabica",
-                price=4.50,
-                image="https://images.unsplash.com/photo-1587734195503-904fca47e0e9?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                description="Single origin from Cambodian highlands with rich flavor notes",
-                category="Hot Coffee",
-                rating=4.8,
-                brew_time="4-5 min",
-                is_available=True,
-                stock=100
-            ),
-            models.CoffeeProduct(
-                name="Phnom Penh Cold Brew",
-                price=5.25,
-                image="https://images.unsplash.com/photo-1461023058943-07fcbe16d735?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                description="Smooth 12-hour cold extraction with chocolate undertones",
-                category="Cold Brew",
-                rating=4.9,
-                brew_time="12 hours",
-                is_available=True,
-                stock=85
-            ),
-            models.CoffeeProduct(
-                name="Siem Reap Robusta",
-                price=3.75,
-                image="https://images.unsplash.com/photo-1572442388796-11668a67e53d?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                description="Strong and bold traditional Cambodian blend",
-                category="Hot Coffee",
-                rating=4.6,
-                brew_time="3-4 min",
-                is_available=True,
-                stock=120
-            )
-        ]
-        
-        for product in sample_products:
-            db.add(product)
-        
-        db.commit()
-        print("✅ Sample coffee products created!")
-    
-    db.close()
-
-# Create sample data on startup
-create_sample_data()
-
 # Store active payment checks (in production, use Redis or database)
 active_payment_checks = {}
 
+# Startup event
+@app.on_event("startup")
+async def startup():
+    await database.connect()
+    await create_sample_data()
+
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
+
+# Create sample data and default admin
+async def create_sample_data():
+    # Check if default admin exists
+    default_admin = await crud.get_admin_by_email(database, "admin@gmail.com")
+    if not default_admin:
+        # Create default admin
+        admin_data = schemas.AdminUserCreate(
+            email="admin@gmail.com",
+            password="11112222",
+            full_name="System Administrator",
+            role="super_admin"
+        )
+        await crud.create_admin_user(database, admin_data)
+        print("✅ Default admin created: admin@gmail.com / 11112222")
+    
+    # Check if products already exist
+    total_products = await database.fetch_val("SELECT COUNT(*) FROM coffee_products")
+    if total_products == 0:
+        sample_products = [
+            {
+                "name": "Mondulkiri Arabica",
+                "price": 4.50,
+                "image": "https://images.unsplash.com/photo-1587734195503-904fca47e0e9?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Single origin from Cambodian highlands with rich flavor notes",
+                "category": "Hot Coffee",
+                "rating": 4.8,
+                "brew_time": "4-5 min",
+                "is_available": True,
+                "stock": 100
+            },
+            {
+                "name": "Phnom Penh Cold Brew",
+                "price": 5.25,
+                "image": "https://images.unsplash.com/photo-1461023058943-07fcbe16d735?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Smooth 12-hour cold extraction with chocolate undertones",
+                "category": "Cold Brew",
+                "rating": 4.9,
+                "brew_time": "12 hours",
+                "is_available": True,
+                "stock": 85
+            },
+            {
+                "name": "Siem Reap Robusta",
+                "price": 3.75,
+                "image": "https://images.unsplash.com/photo-1572442388796-11668a67e53d?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Strong and bold traditional Cambodian blend",
+                "category": "Hot Coffee",
+                "rating": 4.6,
+                "brew_time": "3-4 min",
+                "is_available": True,
+                "stock": 120
+            }
+        ]
+        
+        for product in sample_products:
+            query = CoffeeProduct.__table__.insert().values(**product)
+            await database.execute(query)
+        
+        print("✅ Sample coffee products created!")
+
 # Background task to check payment status (demo version)
-async def check_payment_status_demo(order_number: str, db: Session):
+async def check_payment_status_demo(order_number: str):
     """Demo version that simulates payment confirmation"""
     print(f"⏳ Simulating payment processing for order {order_number}...")
     
@@ -144,7 +161,7 @@ async def check_payment_status_demo(order_number: str, db: Session):
     await asyncio.sleep(processing_time)
     
     # Update order status to paid (for demo)
-    db_order = crud.update_order_payment_status(db, order_number, "paid", "demo_md5_hash")
+    db_order = await crud.update_order_payment_status(database, order_number, "paid", "demo_md5_hash")
     if db_order:
         active_payment_checks[order_number]['status'] = 'paid'
         print(f"✅ Demo payment confirmed for order {order_number}")
@@ -153,7 +170,7 @@ async def check_payment_status_demo(order_number: str, db: Session):
         print(f"❌ Failed to update payment status for order {order_number}")
 
 # Real KHQR payment status checking
-async def check_khqr_payment_status(order_number: str, md5_hash: str, db: Session):
+async def check_khqr_payment_status(order_number: str, md5_hash: str):
     """Real KHQR payment status checking"""
     print(f"⏳ Checking real KHQR payment for order {order_number}...")
     
@@ -171,7 +188,7 @@ async def check_khqr_payment_status(order_number: str, md5_hash: str, db: Sessio
             if not KHQR_AVAILABLE:
                 # Fallback to demo if KHQR not available
                 await asyncio.sleep(10)
-                db_order = crud.update_order_payment_status(db, order_number, "paid", md5_hash)
+                db_order = await crud.update_order_payment_status(database, order_number, "paid", md5_hash)
                 if db_order:
                     active_payment_checks[order_number]['status'] = 'paid'
                     print(f"✅ Payment confirmed for order {order_number}")
@@ -183,7 +200,7 @@ async def check_khqr_payment_status(order_number: str, md5_hash: str, db: Sessio
             
             if payment_status == "PAID":
                 # Update order status in database
-                db_order = crud.update_order_payment_status(db, order_number, "paid", md5_hash)
+                db_order = await crud.update_order_payment_status(database, order_number, "paid", md5_hash)
                 active_payment_checks[order_number]['status'] = 'paid'
                 print(f"✅ Real payment confirmed for order {order_number}")
                 break
@@ -206,94 +223,97 @@ async def check_khqr_payment_status(order_number: str, md5_hash: str, db: Sessio
         active_payment_checks[order_number]['status'] = 'timeout'
         print(f"⏰ Payment timeout for order {order_number}")
 
-# ========== PRODUCTS ENDPOINTS ==========
+# ========== PUBLIC ENDPOINTS ==========
 @app.get("/api/v1/products/", response_model=List[schemas.CoffeeProduct])
-def read_products(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_products(db, skip=skip, limit=limit)
+async def read_products(skip: int = 0, limit: int = 100, db = Depends(get_db)):
+    return await crud.get_products(db, skip=skip, limit=limit)
 
 @app.get("/api/v1/products/{product_id}", response_model=schemas.CoffeeProduct)
-def read_product(product_id: int, db: Session = Depends(get_db)):
-    db_product = crud.get_product(db, product_id=product_id)
+async def read_product(product_id: int, db = Depends(get_db)):
+    db_product = await crud.get_product(db, product_id=product_id)
     if db_product is None:
         raise HTTPException(status_code=404, detail="Product not found")
     return db_product
 
 @app.post("/api/v1/products/", response_model=schemas.CoffeeProduct)
-def create_product(product: schemas.CoffeeProductCreate, db: Session = Depends(get_db)):
-    return crud.create_product(db=db, product=product)
+async def create_product(product: schemas.CoffeeProductCreate, db = Depends(get_db)):
+    return await crud.create_product(db=db, product=product)
 
 @app.get("/api/v1/categories/")
-def get_categories(db: Session = Depends(get_db)):
-    products = crud.get_products(db)
+async def get_categories(db = Depends(get_db)):
+    products = await crud.get_products(db)
     categories = list(set(product.category for product in products if product.category))
     return {"categories": categories}
 
 @app.get("/api/v1/products/category/{category}")
-def get_products_by_category(category: str, db: Session = Depends(get_db)):
-    products = crud.get_products(db)
+async def get_products_by_category(category: str, db = Depends(get_db)):
+    products = await crud.get_products(db)
     filtered_products = [product for product in products if product.category == category]
     return filtered_products
 
 # ========== CART ENDPOINTS ==========
 @app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
-def read_cart_items(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_cart_items(db, skip=skip, limit=limit)
+async def read_cart_items(skip: int = 0, limit: int = 100, db = Depends(get_db)):
+    return await crud.get_cart_items(db, skip=skip, limit=limit)
 
 @app.post("/api/v1/cart/", response_model=schemas.CartItem)
-def add_to_cart(cart_item: schemas.CartItemCreate, db: Session = Depends(get_db)):
-    return crud.create_cart_item(db=db, cart_item=cart_item)
+async def add_to_cart(cart_item: schemas.CartItemCreate, db = Depends(get_db)):
+    return await crud.create_cart_item(db=db, cart_item=cart_item)
 
 @app.delete("/api/v1/cart/{cart_item_id}")
-def remove_from_cart(cart_item_id: int, db: Session = Depends(get_db)):
-    db_cart_item = crud.delete_cart_item(db=db, cart_item_id=cart_item_id)
-    if db_cart_item is None:
+async def remove_from_cart(cart_item_id: int, db = Depends(get_db)):
+    success = await crud.delete_cart_item(db=db, cart_item_id=cart_item_id)
+    if not success:
         raise HTTPException(status_code=404, detail="Cart item not found")
     return {"message": "Item removed from cart"}
 
 @app.delete("/api/v1/cart/")
-def clear_cart(db: Session = Depends(get_db)):
-    return crud.clear_cart(db=db)
+async def clear_cart(db = Depends(get_db)):
+    success = await crud.clear_cart(db=db)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to clear cart")
+    return {"message": "Cart cleared successfully"}
 
-# ========== ORDERS ENDPOINTS ==========
+# ========== PUBLIC ORDERS ENDPOINTS ==========
 @app.get("/api/v1/orders/", response_model=List[schemas.Order])
-def read_orders(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    return crud.get_orders(db, skip=skip, limit=limit)
+async def read_orders(skip: int = 0, limit: int = 100, db = Depends(get_db)):
+    return await crud.get_orders(db, skip=skip, limit=limit)
 
 @app.post("/api/v1/orders/", response_model=schemas.Order)
-def create_order(order: schemas.OrderCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundTasks, db = Depends(get_db)):
     try:
         print(f"Creating order for: {order.customer_name}")
         print(f"Order items: {len(order.items)} items")
         print(f"Total amount: ${order.total_amount}")
         
-        db_order = crud.create_order(db=db, order=order)
+        # Create the order
+        db_order = await crud.create_order(db=db, order=order)
+        
+        if not db_order:
+            raise HTTPException(status_code=500, detail="Failed to create order")
+        
+        print(f"Order created successfully: {db_order.get('order_number')}")
         
         # Start background payment checking
         if not KHQR_AVAILABLE:
-            background_tasks.add_task(check_payment_status_demo, db_order.order_number, db)
+            background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
         
         return db_order
     except Exception as e:
         print(f"Error creating order: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
 
 @app.get("/api/v1/orders/{order_number}", response_model=schemas.Order)
-def read_order(order_number: str, db: Session = Depends(get_db)):
-    db_order = crud.get_order_by_number(db, order_number=order_number)
-    if db_order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return db_order
-
-@app.put("/api/v1/orders/{order_id}", response_model=schemas.Order)
-def update_order_status(order_id: int, status: str, db: Session = Depends(get_db)):
-    db_order = crud.update_order_status(db=db, order_id=order_id, status=status)
+async def read_order(order_number: str, db = Depends(get_db)):
+    db_order = await crud.get_order_by_number(db, order_number=order_number)
     if db_order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return db_order
 
 # ========== KHQR PAYMENT ENDPOINTS ==========
 @app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
-def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks):
     try:
         print(f"Generating KHQR for order: {khqr_request.order_number}")
         print(f"Amount: {khqr_request.amount} {khqr_request.currency}")
@@ -304,7 +324,7 @@ def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: B
             demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
             
             # Start demo payment processing
-            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number, db)
+            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
             
             return schemas.KHQRResponse(
                 qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
@@ -338,7 +358,7 @@ def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: B
             print(f"❌ QR generation failed: {qr_error}")
             # Fallback to demo mode
             demo_md5 = f"fallback_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number, db)
+            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
             return schemas.KHQRResponse(
                 qr_data=f"FALLBACK_QR_FOR_ORDER_{khqr_request.order_number}",
                 md5_hash=demo_md5,
@@ -355,7 +375,7 @@ def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: B
             md5_hash = f"hash_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
         
         # Start real payment status checking
-        background_tasks.add_task(check_khqr_payment_status, khqr_request.order_number, md5_hash, db)
+        background_tasks.add_task(check_khqr_payment_status, khqr_request.order_number, md5_hash)
         
         # Generate deeplink
         deeplink = None
@@ -394,7 +414,7 @@ def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: B
         print(f"❌ KHQR generation completely failed: {str(e)}")
         # Final fallback
         final_md5 = f"final_fallback_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-        background_tasks.add_task(check_payment_status_demo, khqr_request.order_number, db)
+        background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
         return schemas.KHQRResponse(
             qr_data=f"FINAL_FALLBACK_QR_{khqr_request.order_number}",
             md5_hash=final_md5,
@@ -403,9 +423,9 @@ def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: B
         )
 
 @app.get("/api/v1/khqr/status/{order_number}", response_model=schemas.PaymentStatusResponse)
-def get_payment_status(order_number: str, db: Session = Depends(get_db)):
+async def get_payment_status(order_number: str):
     try:
-        db_order = crud.get_order_by_number(db, order_number=order_number)
+        db_order = await crud.get_order_by_number(database, order_number=order_number)
         if db_order is None:
             raise HTTPException(status_code=404, detail="Order not found")
         
@@ -413,7 +433,7 @@ def get_payment_status(order_number: str, db: Session = Depends(get_db)):
         
         # Check if we have active payment checking for this order
         active_check = active_payment_checks.get(order_number)
-        current_status = db_order.payment_status
+        current_status = db_order.get('payment_status', 'pending')
         
         # If we have active checking, use that status
         if active_check:
@@ -423,8 +443,8 @@ def get_payment_status(order_number: str, db: Session = Depends(get_db)):
         # For demo mode or real mode, return comprehensive status
         transaction_data = {
             "order_number": order_number,
-            "amount": db_order.total_amount,
-            "currency": db_order.currency,
+            "amount": db_order.get('total_amount', 0),
+            "currency": db_order.get('currency', 'USD'),
             "timestamp": datetime.now().isoformat()
         }
         
@@ -457,13 +477,13 @@ def get_payment_status(order_number: str, db: Session = Depends(get_db)):
 
 # ========== PAYMENT MANAGEMENT ENDPOINTS ==========
 @app.post("/api/v1/payments/{order_number}/simulate-paid")
-def simulate_payment_paid(order_number: str, db: Session = Depends(get_db)):
+async def simulate_payment_paid(order_number: str):
     """Endpoint to simulate payment for testing (only in demo mode)"""
     if KHQR_AVAILABLE:
         raise HTTPException(status_code=400, detail="Cannot simulate payments in live mode")
     
     try:
-        db_order = crud.update_order_payment_status(db, order_number, "paid", "simulated_md5")
+        db_order = await crud.update_order_payment_status(database, order_number, "paid", "simulated_md5")
         if db_order:
             # Update active check status
             if order_number in active_payment_checks:
@@ -480,7 +500,7 @@ def simulate_payment_paid(order_number: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to simulate payment: {str(e)}")
 
 @app.get("/api/v1/payments/active")
-def get_active_payments():
+async def get_active_payments():
     """Get all active payment checks (for monitoring)"""
     return {
         "active_payments": active_payment_checks,
@@ -489,7 +509,7 @@ def get_active_payments():
 
 # ========== ROOT ENDPOINTS ==========
 @app.get("/")
-def read_root():
+async def read_root():
     return {
         "message": "Welcome to BrewHaven Coffee Shop API",
         "version": "1.0.0",
@@ -502,17 +522,17 @@ def read_root():
             "cart": "/api/v1/cart/",
             "orders": "/api/v1/orders/",
             "khqr": "/api/v1/khqr/",
-            "payments": "/api/v1/payments/"
+            "payments": "/api/v1/payments/",
+            "admin": "/api/v1/admin/",
+            "admin_docs": "/api/v1/admin/docs"
         }
     }
 
 @app.get("/health")
-def health_check():
+async def health_check():
     db_status = "connected"
     try:
-        db = SessionLocal()
-        db.execute("SELECT 1")
-        db.close()
+        await database.execute("SELECT 1")
     except:
         db_status = "disconnected"
         
@@ -529,9 +549,14 @@ def health_check():
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     print(f"Global error: {exc}")
-    return HTTPException(
+    traceback.print_exc()
+    
+    if isinstance(exc, HTTPException):
+        raise exc
+    
+    return JSONResponse(
         status_code=500,
-        detail="Internal server error occurred"
+        content={"detail": f"Internal server error occurred: {str(exc)}"}
     )
 
 if __name__ == "__main__":

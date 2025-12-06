@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+# schemas.py
+from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -31,6 +32,7 @@ class CoffeeProductUpdate(BaseModel):
 class CoffeeProduct(CoffeeProductBase):
     id: int
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -62,17 +64,30 @@ class OrderBase(BaseModel):
     items: List[Dict[str, Any]]
     total_amount: float
     currency: str = "USD"
+    payment_method: str = "khqr"
+    notes: Optional[str] = ""
 
 class OrderCreate(OrderBase):
     pass
 
+class OrderUpdate(BaseModel):
+    status: Optional[str] = None
+    payment_status: Optional[str] = None
+    admin_notes: Optional[str] = None
+
 class Order(OrderBase):
     id: int
     order_number: str
-    status: str
+    status: str = "pending"
     khqr_md5: Optional[str] = None
-    payment_status: str
+    payment_status: str = "pending"
+    admin_notes: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    @validator('status', 'payment_status', pre=True, always=True)
+    def set_default_status(cls, v):
+        return v or "pending"
 
     class Config:
         from_attributes = True
@@ -93,3 +108,58 @@ class PaymentStatusResponse(BaseModel):
     order_number: str
     payment_status: str
     transaction_data: Optional[Dict[str, Any]] = None
+
+# Admin User Schemas
+class AdminUserBase(BaseModel):
+    email: EmailStr
+    full_name: Optional[str] = None
+    role: str = "admin"
+
+class AdminUserCreate(AdminUserBase):
+    password: str = Field(..., min_length=6)
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = Field(None, min_length=6)
+
+class AdminUserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class AdminUser(AdminUserBase):
+    id: int
+    is_active: bool = True
+    last_login: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+# Admin Token Schemas
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    admin: AdminUser
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
+# Dashboard Stats
+class DashboardStats(BaseModel):
+    total_orders: int
+    total_revenue: float
+    total_products: int
+    pending_orders: int
+    completed_orders: int
+    today_orders: int
+    today_revenue: float
+
+# Order Stats
+class OrderStats(BaseModel):
+    date: str
+    orders: int
+    revenue: float

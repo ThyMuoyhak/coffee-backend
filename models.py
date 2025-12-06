@@ -1,3 +1,4 @@
+# models.py
 from sqlalchemy import Column, Integer, String, Float, Text, Boolean, DateTime, JSON
 from sqlalchemy.sql import func
 from database import Base
@@ -16,6 +17,7 @@ class CoffeeProduct(Base):
     is_available = Column(Boolean, default=True)
     stock = Column(Integer, default=100)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 class CartItem(Base):
     __tablename__ = "cart_items"
@@ -43,5 +45,21 @@ class Order(Base):
     status = Column(String(20), default="pending")
     khqr_md5 = Column(String(100), nullable=True)
     payment_status = Column(String(20), default="pending")
+    payment_method = Column(String(20), default="khqr")
+    notes = Column(Text)
+    admin_notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(100))
+    role = Column(String(50), default="admin")
+    is_active = Column(Boolean, default=True)
+    last_login = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

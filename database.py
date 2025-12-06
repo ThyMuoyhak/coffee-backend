@@ -1,14 +1,31 @@
-from sqlalchemy import create_engine
+# database.py
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, MetaData
+from databases import Database
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./coffee_shop.db"
+# SQLite database URL
+DATABASE_URL = "sqlite:///./coffee_shop.db"
 
+# Create SQLAlchemy engine
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
+    DATABASE_URL,
     connect_args={"check_same_thread": False}
 )
 
+# Create metadata
+metadata = MetaData()
+
+# Create declarative base
+Base = declarative_base()
+
+# Create async database connection
+database = Database(DATABASE_URL)
+
+# Create session maker
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-Base = declarative_base()
+# Dependency for async database session
+async def get_db():
+    async with database.transaction():
+        yield database
