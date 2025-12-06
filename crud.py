@@ -1,6 +1,5 @@
 # crud.py
 from sqlalchemy import func, select, update, delete, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from databases import Database
 from models import CoffeeProduct, CartItem, Order, AdminUser
 import schemas
@@ -36,26 +35,28 @@ def create_access_token(data: dict):
 # ========== ASYNC CRUD OPERATIONS ==========
 
 # Admin CRUD
-async def get_admin_by_email(db: Database, email: str) -> Optional[AdminUser]:
+async def get_admin_by_email(db: Database, email: str) -> Optional[dict]:
     query = select(AdminUser).where(AdminUser.email == email)
     result = await db.fetch_one(query)
-    return result
+    return dict(result) if result else None
 
-async def authenticate_admin(db: Database, email: str, password: str) -> Optional[AdminUser]:
+async def authenticate_admin(db: Database, email: str, password: str) -> Optional[dict]:
     admin = await get_admin_by_email(db, email)
     if not admin:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
-    if not verify_password(password, admin.hashed_password):
+    if not verify_password(password, admin['hashed_password']):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
+    # Remove password before returning
+    admin.pop('hashed_password', None)
     return admin
 
-async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> AdminUser:
+async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dict:
     # Check if admin already exists
     existing_admin = await get_admin_by_email(db, admin.email)
     if existing_admin:
@@ -76,38 +77,34 @@ async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> Adm
     query = select(AdminUser).where(AdminUser.id == admin_id)
     result = await db.fetch_one(query)
     
-    # Convert to dict
     if result:
         admin_dict = dict(result)
         # Remove password before returning
-        if 'hashed_password' in admin_dict:
-            del admin_dict['hashed_password']
+        admin_dict.pop('hashed_password', None)
         return admin_dict
     return None
 
-async def get_admin_users(db: Database, skip: int = 0, limit: int = 100) -> List[AdminUser]:
+async def get_admin_users(db: Database, skip: int = 0, limit: int = 100) -> List[dict]:
     query = select(AdminUser).offset(skip).limit(limit)
     results = await db.fetch_all(query)
     # Remove passwords from results
     admin_list = []
     for admin in results:
         admin_dict = dict(admin)
-        if 'hashed_password' in admin_dict:
-            del admin_dict['hashed_password']
+        admin_dict.pop('hashed_password', None)
         admin_list.append(admin_dict)
     return admin_list
 
-async def get_admin_user(db: Database, admin_id: int) -> Optional[AdminUser]:
+async def get_admin_user(db: Database, admin_id: int) -> Optional[dict]:
     query = select(AdminUser).where(AdminUser.id == admin_id)
     result = await db.fetch_one(query)
     if result:
         admin_dict = dict(result)
-        if 'hashed_password' in admin_dict:
-            del admin_dict['hashed_password']
+        admin_dict.pop('hashed_password', None)
         return admin_dict
     return None
 
-async def update_admin_user(db: Database, admin_id: int, admin_update: schemas.AdminUserUpdate) -> Optional[AdminUser]:
+async def update_admin_user(db: Database, admin_id: int, admin_update: schemas.AdminUserUpdate) -> Optional[dict]:
     admin = await get_admin_user(db, admin_id)
     if not admin:
         return None
@@ -133,22 +130,25 @@ async def update_admin_last_login(db: Database, admin_id: int):
     await db.execute(query)
 
 # ========== PRODUCT CRUD ==========
-async def get_products(db: Database, skip: int = 0, limit: int = 100) -> List[CoffeeProduct]:
+async def get_products(db: Database, skip: int = 0, limit: int = 100) -> List[dict]:
     query = select(CoffeeProduct).where(CoffeeProduct.is_available == True).offset(skip).limit(limit)
-    return await db.fetch_all(query)
+    results = await db.fetch_all(query)
+    return [dict(product) for product in results]
 
-async def get_product(db: Database, product_id: int) -> Optional[CoffeeProduct]:
+async def get_product(db: Database, product_id: int) -> Optional[dict]:
     query = select(CoffeeProduct).where(CoffeeProduct.id == product_id)
-    return await db.fetch_one(query)
+    result = await db.fetch_one(query)
+    return dict(result) if result else None
 
-async def create_product(db: Database, product: schemas.CoffeeProductCreate) -> CoffeeProduct:
+async def create_product(db: Database, product: schemas.CoffeeProductCreate) -> dict:
     query = CoffeeProduct.__table__.insert().values(**product.dict())
     product_id = await db.execute(query)
     
     query = select(CoffeeProduct).where(CoffeeProduct.id == product_id)
-    return await db.fetch_one(query)
+    result = await db.fetch_one(query)
+    return dict(result) if result else None
 
-async def update_product(db: Database, product_id: int, product_update: schemas.CoffeeProductUpdate) -> Optional[CoffeeProduct]:
+async def update_product(db: Database, product_id: int, product_update: schemas.CoffeeProductUpdate) -> Optional[dict]:
     product = await get_product(db, product_id)
     if not product:
         return None
@@ -165,16 +165,18 @@ async def delete_product(db: Database, product_id: int) -> bool:
     return result > 0
 
 # ========== CART CRUD ==========
-async def get_cart_items(db: Database, skip: int = 0, limit: int = 100) -> List[CartItem]:
+async def get_cart_items(db: Database, skip: int = 0, limit: int = 100) -> List[dict]:
     query = select(CartItem).offset(skip).limit(limit)
-    return await db.fetch_all(query)
+    results = await db.fetch_all(query)
+    return [dict(item) for item in results]
 
-async def create_cart_item(db: Database, cart_item: schemas.CartItemCreate) -> CartItem:
+async def create_cart_item(db: Database, cart_item: schemas.CartItemCreate) -> dict:
     query = CartItem.__table__.insert().values(**cart_item.dict())
     cart_item_id = await db.execute(query)
     
     query = select(CartItem).where(CartItem.id == cart_item_id)
-    return await db.fetch_one(query)
+    result = await db.fetch_one(query)
+    return dict(result) if result else None
 
 async def delete_cart_item(db: Database, cart_item_id: int) -> bool:
     query = delete(CartItem).where(CartItem.id == cart_item_id)
@@ -187,11 +189,10 @@ async def clear_cart(db: Database) -> bool:
     return result > 0
 
 # ========== ORDER CRUD ==========
-async def get_orders(db: Database, skip: int = 0, limit: int = 100) -> List[Order]:
+async def get_orders(db: Database, skip: int = 0, limit: int = 100) -> List[dict]:
     query = select(Order).order_by(Order.created_at.desc()).offset(skip).limit(limit)
     results = await db.fetch_all(query)
     
-    # Ensure all fields are properly formatted
     orders_list = []
     for order in results:
         order_dict = dict(order)
@@ -206,7 +207,7 @@ async def get_orders(db: Database, skip: int = 0, limit: int = 100) -> List[Orde
     
     return orders_list
 
-async def get_order_by_number(db: Database, order_number: str) -> Optional[Order]:
+async def get_order_by_number(db: Database, order_number: str) -> Optional[dict]:
     query = select(Order).where(Order.order_number == order_number)
     result = await db.fetch_one(query)
     if result:
@@ -221,7 +222,7 @@ async def get_order_by_number(db: Database, order_number: str) -> Optional[Order
         return order_dict
     return None
 
-async def create_order(db: Database, order: schemas.OrderCreate) -> Order:
+async def create_order(db: Database, order: schemas.OrderCreate) -> dict:
     order_number = f"BH{datetime.now().strftime('%Y%m%d')}{uuid.uuid4().hex[:8].upper()}"
     
     # Convert to dict and add required fields
@@ -235,8 +236,6 @@ async def create_order(db: Database, order: schemas.OrderCreate) -> Order:
     # Ensure notes field is present
     if not order_data.get('notes'):
         order_data['notes'] = ''
-    
-    print(f"Creating order with data: {order_data}")
     
     query = Order.__table__.insert().values(**order_data)
     order_id = await db.execute(query)
@@ -258,7 +257,7 @@ async def create_order(db: Database, order: schemas.OrderCreate) -> Order:
     
     return None
 
-async def update_order(db: Database, order_id: int, order_update: schemas.OrderUpdate) -> Optional[Order]:
+async def update_order(db: Database, order_id: int, order_update: schemas.OrderUpdate) -> Optional[dict]:
     order = await get_order_by_id(db, order_id)
     if not order:
         return None
@@ -269,7 +268,7 @@ async def update_order(db: Database, order_id: int, order_update: schemas.OrderU
     
     return await get_order_by_id(db, order_id)
 
-async def get_order_by_id(db: Database, order_id: int) -> Optional[Order]:
+async def get_order_by_id(db: Database, order_id: int) -> Optional[dict]:
     query = select(Order).where(Order.id == order_id)
     result = await db.fetch_one(query)
     if result:
@@ -284,7 +283,7 @@ async def get_order_by_id(db: Database, order_id: int) -> Optional[Order]:
         return order_dict
     return None
 
-async def update_order_payment_status(db: Database, order_number: str, payment_status: str, khqr_md5: str = None) -> Optional[Order]:
+async def update_order_payment_status(db: Database, order_number: str, payment_status: str, khqr_md5: str = None) -> Optional[dict]:
     order = await get_order_by_number(db, order_number)
     if not order:
         return None
@@ -298,7 +297,7 @@ async def update_order_payment_status(db: Database, order_number: str, payment_s
     
     return await get_order_by_number(db, order_number)
 
-async def search_orders(db: Database, query_str: str) -> List[Order]:
+async def search_orders(db: Database, query_str: str) -> List[dict]:
     query = select(Order).where(
         (Order.order_number.ilike(f"%{query_str}%")) |
         (Order.customer_name.ilike(f"%{query_str}%")) |
@@ -306,7 +305,6 @@ async def search_orders(db: Database, query_str: str) -> List[Order]:
     ).order_by(Order.created_at.desc())
     results = await db.fetch_all(query)
     
-    # Ensure all fields are properly formatted
     orders_list = []
     for order in results:
         order_dict = dict(order)
@@ -321,11 +319,10 @@ async def search_orders(db: Database, query_str: str) -> List[Order]:
     
     return orders_list
 
-async def get_orders_by_status(db: Database, status: str) -> List[Order]:
+async def get_orders_by_status(db: Database, status: str) -> List[dict]:
     query = select(Order).where(Order.status == status).order_by(Order.created_at.desc())
     results = await db.fetch_all(query)
     
-    # Ensure all fields are properly formatted
     orders_list = []
     for order in results:
         order_dict = dict(order)
@@ -340,7 +337,7 @@ async def get_orders_by_status(db: Database, status: str) -> List[Order]:
     
     return orders_list
 
-async def get_orders_by_date_range(db: Database, start_date: date, end_date: date) -> List[Order]:
+async def get_orders_by_date_range(db: Database, start_date: date, end_date: date) -> List[dict]:
     query = select(Order).where(
         and_(
             func.date(Order.created_at) >= start_date,
@@ -349,7 +346,6 @@ async def get_orders_by_date_range(db: Database, start_date: date, end_date: dat
     ).order_by(Order.created_at.desc())
     results = await db.fetch_all(query)
     
-    # Ensure all fields are properly formatted
     orders_list = []
     for order in results:
         order_dict = dict(order)

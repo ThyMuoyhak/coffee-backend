@@ -1,4 +1,4 @@
-# schemas.py - Updated for Pydantic 2.4.2
+# schemas.py
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -14,6 +14,9 @@ class CoffeeProductBase(BaseModel):
     brew_time: Optional[str] = None
     is_available: bool = True
     stock: int = 100
+
+    class Config:
+        orm_mode = True
 
 class CoffeeProductCreate(CoffeeProductBase):
     pass
@@ -34,9 +37,6 @@ class CoffeeProduct(CoffeeProductBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
-
 # Cart Item Schemas
 class CartItemBase(BaseModel):
     product_id: int
@@ -46,15 +46,15 @@ class CartItemBase(BaseModel):
     sugar_level: str = "regular"
     image: str
 
+    class Config:
+        orm_mode = True
+
 class CartItemCreate(CartItemBase):
     pass
 
 class CartItem(CartItemBase):
     id: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 # Order Schemas
 class OrderBase(BaseModel):
@@ -66,6 +66,9 @@ class OrderBase(BaseModel):
     currency: str = "USD"
     payment_method: str = "khqr"
     notes: Optional[str] = ""
+
+    class Config:
+        orm_mode = True
 
 class OrderCreate(OrderBase):
     pass
@@ -88,9 +91,6 @@ class Order(OrderBase):
     @validator('status', 'payment_status', pre=True, always=True)
     def set_default_status(cls, v):
         return v or "pending"
-
-    class Config:
-        from_attributes = True
 
 # KHQR Schemas
 class KHQRRequest(BaseModel):
@@ -115,6 +115,9 @@ class AdminUserBase(BaseModel):
     full_name: Optional[str] = None
     role: str = "admin"
 
+    class Config:
+        orm_mode = True
+
 class AdminUserCreate(AdminUserBase):
     password: str = Field(..., min_length=6)
 
@@ -135,9 +138,6 @@ class AdminUser(AdminUserBase):
     last_login: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
 
 # Admin Token Schemas
 class Token(BaseModel):

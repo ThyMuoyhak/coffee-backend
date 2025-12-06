@@ -27,7 +27,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,40 +36,10 @@ app.add_middleware(
 # Include admin router
 app.include_router(admin_router)
 
-# KHQR Configuration
+# KHQR Configuration - Simplified for deployment
 KHQR_AVAILABLE = False
 khqr = None
-BAKONG_ACCOUNT = "muoyhak_thyy@wing"
-
-try:
-    from bakong_khqr import KHQR
-    KHQR_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiNjZmM2VkZGY3OTMxNGRiZiJ9LCJpYXQiOjE3NjQ1MDkyNzcsImV4cCI6MTc3MjI4NTI3N30.jo8zLgJ_j4D-zhjtYYTGP4UbdcIeYJBIJIWYhpomb10"
-    
-    # Test KHQR initialization
-    khqr = KHQR(KHQR_TOKEN)
-    
-    # Test with a simple QR generation to verify it works
-    test_qr = khqr.create_qr(
-        bank_account=BAKONG_ACCOUNT,
-        merchant_name='Test',
-        merchant_city='Phnom Penh',
-        amount=1000,
-        currency='KHR',
-        store_label='Test',
-        phone_number='855123456789',
-        bill_number='TEST001',
-        terminal_label='Test',
-        static=False
-    )
-    
-    KHQR_AVAILABLE = True
-    print("✅ KHQR payment system initialized successfully")
-    
-except ImportError:
-    print("⚠️ KHQR package not available, running in demo mode")
-except Exception as e:
-    print(f"⚠️ KHQR initialization failed: {e}")
-    print("🔄 Running in demo mode")
+print("🔄 Running in DEMO mode - KHQR payments will be simulated")
 
 # Store active payment checks (in production, use Redis or database)
 active_payment_checks = {}
@@ -169,60 +139,6 @@ async def check_payment_status_demo(order_number: str):
         active_payment_checks[order_number]['status'] = 'failed'
         print(f"❌ Failed to update payment status for order {order_number}")
 
-# Real KHQR payment status checking
-async def check_khqr_payment_status(order_number: str, md5_hash: str):
-    """Real KHQR payment status checking"""
-    print(f"⏳ Checking real KHQR payment for order {order_number}...")
-    
-    active_payment_checks[order_number] = {
-        'start_time': time.time(),
-        'status': 'processing',
-        'md5_hash': md5_hash
-    }
-    
-    max_attempts = 30  # Check for 5 minutes (30 * 10 seconds)
-    attempts = 0
-    
-    while attempts < max_attempts:
-        try:
-            if not KHQR_AVAILABLE:
-                # Fallback to demo if KHQR not available
-                await asyncio.sleep(10)
-                db_order = await crud.update_order_payment_status(database, order_number, "paid", md5_hash)
-                if db_order:
-                    active_payment_checks[order_number]['status'] = 'paid'
-                    print(f"✅ Payment confirmed for order {order_number}")
-                    break
-                continue
-            
-            # Check real payment status
-            payment_status = khqr.check_payment(md5_hash)
-            
-            if payment_status == "PAID":
-                # Update order status in database
-                db_order = await crud.update_order_payment_status(database, order_number, "paid", md5_hash)
-                active_payment_checks[order_number]['status'] = 'paid'
-                print(f"✅ Real payment confirmed for order {order_number}")
-                break
-            elif payment_status == "UNPAID":
-                print(f"⏳ Waiting for payment for order {order_number}... (Attempt {attempts + 1})")
-                active_payment_checks[order_number]['status'] = 'processing'
-            else:
-                print(f"❓ Unknown payment status for order {order_number}: {payment_status}")
-                active_payment_checks[order_number]['status'] = 'unknown'
-                
-        except Exception as e:
-            print(f"❌ Error checking payment status: {e}")
-            active_payment_checks[order_number]['status'] = 'error'
-        
-        attempts += 1
-        await asyncio.sleep(10)  # Check every 10 seconds
-    
-    # If we reach max attempts without payment
-    if attempts >= max_attempts and active_payment_checks[order_number]['status'] != 'paid':
-        active_payment_checks[order_number]['status'] = 'timeout'
-        print(f"⏰ Payment timeout for order {order_number}")
-
 # ========== PUBLIC ENDPOINTS ==========
 @app.get("/api/v1/products/", response_model=List[schemas.CoffeeProduct])
 async def read_products(skip: int = 0, limit: int = 100, db = Depends(get_db)):
@@ -295,8 +211,7 @@ async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundT
         print(f"Order created successfully: {db_order.get('order_number')}")
         
         # Start background payment checking
-        if not KHQR_AVAILABLE:
-            background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
+        background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
         
         return db_order
     except Exception as e:
@@ -314,113 +229,20 @@ async def read_order(order_number: str, db = Depends(get_db)):
 # ========== KHQR PAYMENT ENDPOINTS ==========
 @app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
 async def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks):
-    try:
-        print(f"Generating KHQR for order: {khqr_request.order_number}")
-        print(f"Amount: {khqr_request.amount} {khqr_request.currency}")
-        
-        if not KHQR_AVAILABLE:
-            # Return enhanced demo data
-            print("🔄 Using demo KHQR data")
-            demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-            
-            # Start demo payment processing
-            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
-            
-            return schemas.KHQRResponse(
-                qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
-                md5_hash=demo_md5,
-                deeplink=f"https://example.com/demo/{khqr_request.order_number}",
-                qr_image=None
-            )
-        
-        # Convert USD to KHR (approximate rate)
-        exchange_rate = 4100  # 1 USD ≈ 4100 KHR
-        amount_khr = int(khqr_request.amount * exchange_rate)
-        
-        print(f"Converted amount: {amount_khr} KHR")
-        
-        # Generate QR code with proper error handling
-        try:
-            qr_data = khqr.create_qr(
-                bank_account=BAKONG_ACCOUNT,
-                merchant_name='BrewHaven Coffee',
-                merchant_city='Phnom Penh',
-                amount=amount_khr,
-                currency='KHR',
-                store_label='BrewHaven',
-                phone_number='855123456789',
-                bill_number=khqr_request.order_number,
-                terminal_label='Online-Order',
-                static=False
-            )
-            print("✅ QR data generated successfully")
-        except Exception as qr_error:
-            print(f"❌ QR generation failed: {qr_error}")
-            # Fallback to demo mode
-            demo_md5 = f"fallback_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-            background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
-            return schemas.KHQRResponse(
-                qr_data=f"FALLBACK_QR_FOR_ORDER_{khqr_request.order_number}",
-                md5_hash=demo_md5,
-                deeplink=f"https://example.com/fallback/{khqr_request.order_number}",
-                qr_image=None
-            )
-        
-        # Generate MD5 hash
-        try:
-            md5_hash = khqr.generate_md5(qr_data)
-            print("✅ MD5 hash generated")
-        except Exception as md5_error:
-            print(f"❌ MD5 generation failed: {md5_error}")
-            md5_hash = f"hash_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-        
-        # Start real payment status checking
-        background_tasks.add_task(check_khqr_payment_status, khqr_request.order_number, md5_hash)
-        
-        # Generate deeplink
-        deeplink = None
-        try:
-            deeplink = khqr.generate_deeplink(
-                qr_data,
-                callback=f"http://localhost:3000/order/{khqr_request.order_number}",
-                appIconUrl="https://images.unsplash.com/photo-1509042239860-f550ce710b93?ixlib=rb-4.0.3&auto=format&fit=crop&w=100&q=80",
-                appName="BrewHaven"
-            )
-            print("✅ Deeplink generated")
-        except Exception as deeplink_error:
-            print(f"❌ Deeplink generation failed: {deeplink_error}")
-            deeplink = f"https://bakong.page.link/demo_{khqr_request.order_number}"
-        
-        # Generate QR image (optional)
-        qr_image = None
-        try:
-            qr_image = khqr.qr_image(qr_data, format='base64_uri')
-            print("✅ QR image generated")
-        except Exception as image_error:
-            print(f"⚠️ QR image generation failed: {image_error}")
-            # This is optional, so we continue without the image
-        
-        response = schemas.KHQRResponse(
-            qr_data=qr_data,
-            md5_hash=md5_hash,
-            deeplink=deeplink,
-            qr_image=qr_image
-        )
-        
-        print("✅ KHQR response prepared successfully")
-        return response
-        
-    except Exception as e:
-        print(f"❌ KHQR generation completely failed: {str(e)}")
-        # Final fallback
-        final_md5 = f"final_fallback_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-        background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
-        return schemas.KHQRResponse(
-            qr_data=f"FINAL_FALLBACK_QR_{khqr_request.order_number}",
-            md5_hash=final_md5,
-            deeplink=f"https://example.com/final_fallback/{khqr_request.order_number}",
-            qr_image=None
-        )
+    """Generate demo KHQR for deployment"""
+    print(f"🔄 Generating DEMO KHQR for order: {khqr_request.order_number}")
+    
+    demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
+    
+    # Start demo payment processing
+    background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
+    
+    return schemas.KHQRResponse(
+        qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
+        md5_hash=demo_md5,
+        deeplink=f"https://example.com/demo/{khqr_request.order_number}",
+        qr_image=None
+    )
 
 @app.get("/api/v1/khqr/status/{order_number}", response_model=schemas.PaymentStatusResponse)
 async def get_payment_status(order_number: str):
@@ -440,27 +262,15 @@ async def get_payment_status(order_number: str):
             current_status = active_check['status']
             print(f"Active payment check status: {current_status}")
         
-        # For demo mode or real mode, return comprehensive status
+        # Return status
         transaction_data = {
             "order_number": order_number,
             "amount": db_order.get('total_amount', 0),
             "currency": db_order.get('currency', 'USD'),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "demo": True,
+            "mode": "demo"
         }
-        
-        if not KHQR_AVAILABLE:
-            transaction_data["demo"] = True
-            transaction_data["mode"] = "demo"
-        else:
-            transaction_data["demo"] = False
-            transaction_data["mode"] = "live"
-        
-        # Add active check info if available
-        if active_check:
-            transaction_data["check_active"] = True
-            transaction_data["check_duration"] = time.time() - active_check['start_time']
-        else:
-            transaction_data["check_active"] = False
         
         response = schemas.PaymentStatusResponse(
             order_number=order_number,
@@ -478,10 +288,7 @@ async def get_payment_status(order_number: str):
 # ========== PAYMENT MANAGEMENT ENDPOINTS ==========
 @app.post("/api/v1/payments/{order_number}/simulate-paid")
 async def simulate_payment_paid(order_number: str):
-    """Endpoint to simulate payment for testing (only in demo mode)"""
-    if KHQR_AVAILABLE:
-        raise HTTPException(status_code=400, detail="Cannot simulate payments in live mode")
-    
+    """Endpoint to simulate payment for testing"""
     try:
         db_order = await crud.update_order_payment_status(database, order_number, "paid", "simulated_md5")
         if db_order:
@@ -514,7 +321,7 @@ async def read_root():
         "message": "Welcome to BrewHaven Coffee Shop API",
         "version": "1.0.0",
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO" if not KHQR_AVAILABLE else "LIVE",
+        "mode": "DEMO",
         "active_payments": len(active_payment_checks),
         "endpoints": {
             "docs": "/docs",
@@ -540,7 +347,7 @@ async def health_check():
         "status": "healthy", 
         "database": db_status, 
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO" if not KHQR_AVAILABLE else "LIVE",
+        "mode": "DEMO",
         "active_payments": len(active_payment_checks),
         "timestamp": datetime.now().isoformat()
     }
@@ -561,4 +368,4 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=10000)

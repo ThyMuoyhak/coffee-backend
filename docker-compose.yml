@@ -1,0 +1,12 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:10000"
+    volumes:
+      - ./coffee_shop.db:/app/coffee_shop.db
+    environment:
+      - DATABASE_URL=sqlite:///./coffee_shop.db
