@@ -4,6 +4,6 @@ sqlalchemy==2.0.23
 databases[aiosqlite]==0.8.0
 python-multipart==0.0.6
 pydantic==2.5.0
-bakong-khqr==1.0.0
+bakong-khqr==0.4.15
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
