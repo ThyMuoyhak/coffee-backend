@@ -9,50 +9,25 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from fastapi import HTTPException, status
 from typing import Optional, List
+import hashlib
 
-# Password hashing context - FIXED for bcrypt 72-byte limit
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# ========== PASSWORD HASHING ==========
+# Use SHA256 instead of bcrypt to avoid version issues
+def get_password_hash(password: str) -> str:
+    """Hash password using SHA256"""
+    # Add a salt and hash
+    salt = "brewhaven-coffee-shop-salt"
+    return hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password by hashing and comparing"""
+    # Hash the plain password and compare
+    return get_password_hash(plain_password) == hashed_password
 
 # Secret key for JWT
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
-
-# ========== ADMIN AUTHENTICATION ==========
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash, handling bcrypt's 72-byte limit"""
-    try:
-        # Bcrypt has a 72-byte limit, so we need to handle this
-        return pwd_context.verify(plain_password, hashed_password)
-    except Exception as e:
-        print(f"Password verification error: {e}")
-        # Try with explicit verification
-        try:
-            # If the password is too long, truncate it
-            password_bytes = plain_password.encode('utf-8')
-            if len(password_bytes) > 72:
-                password_bytes = password_bytes[:72]
-                truncated_password = password_bytes.decode('utf-8', 'ignore')
-                return pwd_context.verify(truncated_password, hashed_password)
-            return pwd_context.verify(plain_password, hashed_password)
-        except Exception as e2:
-            print(f"Password verification error (second attempt): {e2}")
-            return False
-
-def get_password_hash(password: str) -> str:
-    """Get password hash, handling bcrypt's 72-byte limit"""
-    try:
-        # Normal hash attempt
-        return pwd_context.hash(password)
-    except ValueError as e:
-        if "72 bytes" in str(e):
-            # Truncate to 72 bytes for bcrypt
-            password_bytes = password.encode('utf-8')
-            if len(password_bytes) > 72:
-                password_bytes = password_bytes[:72]
-                truncated_password = password_bytes.decode('utf-8', 'ignore')
-                return pwd_context.hash(truncated_password)
-        raise e
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -70,10 +45,13 @@ async def get_admin_by_email(db: Database, email: str) -> Optional[dict]:
     return dict(result) if result else None
 
 async def authenticate_admin(db: Database, email: str, password: str) -> Optional[dict]:
-    """Authenticate admin user with proper error handling"""
+    """Authenticate admin user"""
     try:
+        print(f"🔐 Authenticating admin: {email}")
+        
         admin = await get_admin_by_email(db, email)
         if not admin:
+            print(f"❌ Admin not found: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
@@ -81,59 +59,62 @@ async def authenticate_admin(db: Database, email: str, password: str) -> Optiona
         
         # Check if admin is active
         if not admin.get("is_active", True):
+            print(f"❌ Admin inactive: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Admin account is inactive"
             )
         
-        # Verify password with proper error handling
+        # Verify password
         hashed_password = admin.get('hashed_password', '')
         if not hashed_password:
+            print(f"❌ No password hash for admin: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid admin credentials"
             )
         
-        # Log for debugging
-        print(f"Attempting to verify password for admin: {email}")
-        print(f"Password length: {len(password)}")
-        print(f"Hashed password exists: {bool(hashed_password)}")
+        print(f"🔑 Verifying password for: {email}")
+        print(f"   Input password length: {len(password)}")
+        print(f"   Stored hash length: {len(hashed_password)}")
         
-        # Try password verification
+        # Use our simple verification
         if verify_password(password, hashed_password):
+            print(f"✅ Password verified for: {email}")
             # Remove password before returning
             admin_dict = dict(admin)
             admin_dict.pop('hashed_password', None)
-            print(f"✅ Authentication successful for admin: {email}")
             return admin_dict
         else:
-            print(f"❌ Password verification failed for admin: {email}")
+            print(f"❌ Password verification failed for: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
             )
             
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        print(f"Authentication error for admin {email}: {e}")
+        print(f"🔥 Authentication error for {email}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication error: {str(e)}"
+            detail="Authentication error"
         )
 
 async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dict:
-    """Create admin user with proper password hashing"""
+    """Create admin user"""
     # Check if admin already exists
     existing_admin = await get_admin_by_email(db, admin.email)
     if existing_admin:
         raise HTTPException(status_code=400, detail="Admin with this email already exists")
     
     try:
-        # Hash the password with proper handling
+        # Hash the password
         hashed_password = get_password_hash(admin.password)
-        print(f"✅ Password hashed successfully for admin: {admin.email}")
+        print(f"✅ Password hashed for: {admin.email}")
+        print(f"   Hash: {hashed_password[:50]}...")
         
         query = AdminUser.__table__.insert().values(
             email=admin.email,
@@ -156,18 +137,10 @@ async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dic
             return admin_dict
         return None
         
-    except ValueError as e:
-        if "72 bytes" in str(e):
-            raise HTTPException(
-                status_code=400,
-                detail="Password is too long. Please use a shorter password."
-            )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Password error: {str(e)}"
-        )
     except Exception as e:
-        print(f"Error creating admin user: {e}")
+        print(f"❌ Error creating admin user: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create admin user: {str(e)}"
