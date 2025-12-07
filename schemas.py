@@ -1,8 +1,10 @@
-from pydantic import BaseModel, EmailStr, Field, validator
+# schemas.py
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 
-# Coffee Product Schemas
+# ========== PRODUCT SCHEMAS ==========
 class CoffeeProductBase(BaseModel):
     name: str
     price: float
@@ -13,9 +15,6 @@ class CoffeeProductBase(BaseModel):
     brew_time: Optional[str] = None
     is_available: bool = True
     stock: int = 100
-
-    class Config:
-        orm_mode = True
 
 class CoffeeProductCreate(CoffeeProductBase):
     pass
@@ -33,41 +32,49 @@ class CoffeeProductUpdate(BaseModel):
 
 class CoffeeProduct(CoffeeProductBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    
+    class Config:
+        orm_mode = True
+        from_attributes = True
 
-# Cart Item Schemas
+# ========== CART SCHEMAS ==========
 class CartItemBase(BaseModel):
     product_id: int
     product_name: str
     quantity: int
     price: float
     sugar_level: str = "regular"
-    image: str
-
-    class Config:
-        orm_mode = True
+    image: Optional[str] = None
 
 class CartItemCreate(CartItemBase):
     pass
 
 class CartItem(CartItemBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
+    
+    class Config:
+        orm_mode = True
+        from_attributes = True
 
-# Order Schemas
+# ========== ORDER SCHEMAS ==========
+class OrderItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: int
+    price: float
+    sugar_level: Optional[str] = "regular"
+
 class OrderBase(BaseModel):
     customer_name: str
     phone_number: str
-    delivery_address: str
-    items: List[Dict[str, Any]]
+    delivery_address: Optional[str] = None
+    items: List[OrderItem]
     total_amount: float
     currency: str = "USD"
-    payment_method: str = "khqr"
-    notes: Optional[str] = ""
-
-    class Config:
-        orm_mode = True
+    notes: Optional[str] = None
 
 class OrderCreate(OrderBase):
     pass
@@ -81,51 +88,32 @@ class Order(OrderBase):
     id: int
     order_number: str
     status: str = "pending"
-    khqr_md5: Optional[str] = None
     payment_status: str = "pending"
+    payment_method: Optional[str] = "khqr"
+    khqr_md5: Optional[str] = None
     admin_notes: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    @validator('status', 'payment_status', pre=True, always=True)
-    def set_default_status(cls, v):
-        return v or "pending"
-
-# KHQR Schemas
-class KHQRRequest(BaseModel):
-    amount: float
-    currency: str
-    order_number: str
-
-class KHQRResponse(BaseModel):
-    qr_data: str
-    md5_hash: str
-    deeplink: Optional[str] = None
-    qr_image: Optional[str] = None
-
-class PaymentStatusResponse(BaseModel):
-    order_number: str
-    payment_status: str
-    transaction_data: Optional[Dict[str, Any]] = None
-
-# Admin User Schemas
-class AdminUserBase(BaseModel):
-    email: EmailStr
-    full_name: Optional[str] = None
-    role: str = "admin"
-
+    
     class Config:
         orm_mode = True
+        from_attributes = True
+
+# ========== ADMIN SCHEMAS ==========
+class AdminUserBase(BaseModel):
+    email: EmailStr
+    full_name: str
+    role: str = "admin"
 
 class AdminUserCreate(AdminUserBase):
-    password: str = Field(..., min_length=6)
+    password: str
 
 class AdminUserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
+    password: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
-    password: Optional[str] = Field(None, min_length=6)
 
 class AdminUserLogin(BaseModel):
     email: EmailStr
@@ -137,17 +125,21 @@ class AdminUser(AdminUserBase):
     last_login: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    
+    class Config:
+        orm_mode = True
+        from_attributes = True
 
-# Admin Token Schemas
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    admin: AdminUser
-
+# ========== TOKEN SCHEMAS ==========
 class TokenData(BaseModel):
     email: Optional[str] = None
 
-# Dashboard Stats
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    admin: Optional[Dict[str, Any]] = None
+
+# ========== DASHBOARD SCHEMAS ==========
 class DashboardStats(BaseModel):
     total_orders: int
     total_revenue: float
@@ -157,8 +149,19 @@ class DashboardStats(BaseModel):
     today_orders: int
     today_revenue: float
 
-# Order Stats
-class OrderStats(BaseModel):
-    date: str
-    orders: int
-    revenue: float
+# ========== KHQR PAYMENT SCHEMAS ==========
+class KHQRRequest(BaseModel):
+    order_number: str
+    amount: float
+    currency: str = "USD"
+
+class KHQRResponse(BaseModel):
+    qr_data: str
+    md5_hash: str
+    deeplink: Optional[str] = None
+    qr_image: Optional[str] = None
+
+class PaymentStatusResponse(BaseModel):
+    order_number: str
+    payment_status: str
+    transaction_data: Dict[str, Any]

@@ -1,4 +1,4 @@
-# main.py (updated CORS configuration)
+# main.py
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -31,16 +31,16 @@ app.add_middleware(
     allow_origins=[
         "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
         "https://frontend-coffee-backendg2.vercel.app",
-        "http://localhost:3000",  # For local development
-        "http://127.0.0.1:3000",  # For local development
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Include admin router
-app.include_router(admin_router, prefix="/api/v1")
+# IMPORTANT: Include admin router WITHOUT additional prefix since it already has /api/v1/admin
+app.include_router(admin_router)
 
 # KHQR Configuration - Simplified for deployment
 KHQR_AVAILABLE = False
@@ -382,4 +382,4 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    uvicorn.run(app, host="0.0.0.0", port=8080)

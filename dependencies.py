@@ -2,16 +2,15 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from database import database, get_db
 import crud
-import schemas
+from database import database
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/admin/login")
 
-async def get_current_admin(
-    token: str = Depends(oauth2_scheme),
-    db = Depends(get_db)
-) -> schemas.AdminUser:
+async def get_db():
+    return database
+
+async def get_current_admin(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -23,22 +22,23 @@ async def get_current_admin(
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-        token_data = schemas.TokenData(email=email)
     except JWTError:
         raise credentials_exception
     
-    admin = await crud.get_admin_by_email(db, email=token_data.email)
+    # Get admin from database
+    admin = await crud.get_admin_by_email(database, email=email)
     if admin is None:
         raise credentials_exception
-    if not admin.is_active:
+    
+    # Check if admin is active
+    if not admin.get("is_active", True):
         raise HTTPException(status_code=400, detail="Admin account is inactive")
     
     return admin
 
-async def get_current_super_admin(
-    current_admin: schemas.AdminUser = Depends(get_current_admin)
-) -> schemas.AdminUser:
-    if current_admin.role != "super_admin":
+async def get_current_super_admin(current_admin = Depends(get_current_admin)):
+    # Check if admin has super_admin role
+    if current_admin.get("role") != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Super admin privileges required"
