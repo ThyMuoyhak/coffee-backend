@@ -1,8 +1,8 @@
-fastapi>=0.100.0  # FastAPI versions >=0.100 support Pydantic v2
+fastapi==0.104.1
 uvicorn==0.24.0
-sqlalchemy==2.0.23
-databases[aiosqlite]>=0.9.0  # Updated to work with SQLAlchemy 2.0
+sqlalchemy>=2.0.28  # Version 2.0.28+ has Python 3.13 fixes
+databases[aiosqlite]==0.9.0  # Must upgrade to work with newer SQLAlchemy
 python-multipart==0.0.6
-pydantic>=2.0.0  # Upgraded to Pydantic v2
+pydantic==1.10.14  # Keep v1 since FastAPI 0.104.1 uses v1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4

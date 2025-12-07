@@ -1,13 +1,12 @@
-# render.yaml
 services:
   - type: web
-    name: coffee-shop-backend
-    runtime: python
+    name: coffee-backend
+    env: python
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    plan: free
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
-    autoDeploy: true
+        value: 3.11.9
