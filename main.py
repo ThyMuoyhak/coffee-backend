@@ -24,13 +24,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware
+# CORS middleware - SPECIFICALLY ALLOW YOUR FRONTEND DOMAIN
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://frontend-coffee-backendg2.vercel.app",
+        "https://frontend-admin-coffee-backendg2-ce1.vercel.app",  # For local development
+        "http://127.0.0.1:3000",  # For local development
+        "https://frontend-coffee-backendg2-git-main-username.vercel.app",  # Vercel preview URLs
+        "https://frontend-coffee-backendg2-*.vercel.app"  # All preview deployments
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Include admin router
@@ -43,6 +50,9 @@ print("🔄 Running in DEMO mode - KHQR payments will be simulated")
 
 # Store active payment checks (in production, use Redis or database)
 active_payment_checks = {}
+
+# Store session cart (in production, use Redis or database)
+user_carts = {}
 
 # Startup event
 @app.on_event("startup")
@@ -106,6 +116,39 @@ async def create_sample_data():
                 "brew_time": "3-4 min",
                 "is_available": True,
                 "stock": 120
+            },
+            {
+                "name": "Angkor Wat Espresso",
+                "price": 3.50,
+                "image": "https://images.unsplash.com/photo-1510707577719-ae7c9b788690?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Intense and aromatic espresso shot",
+                "category": "Espresso",
+                "rating": 4.7,
+                "brew_time": "30 sec",
+                "is_available": True,
+                "stock": 90
+            },
+            {
+                "name": "Tonle Sap Cappuccino",
+                "price": 4.25,
+                "image": "https://images.unsplash.com/photo-1561047029-3000c68339ca?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Creamy cappuccino with a perfect foam layer",
+                "category": "Milk Coffee",
+                "rating": 4.8,
+                "brew_time": "5-6 min",
+                "is_available": True,
+                "stock": 75
+            },
+            {
+                "name": "Kampot Iced Coffee",
+                "price": 4.00,
+                "image": "https://images.unsplash.com/photo-1466637574441-749b8f19452f?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
+                "description": "Refreshing iced coffee with sweet condensed milk",
+                "category": "Iced Coffee",
+                "rating": 4.9,
+                "brew_time": "3-4 min",
+                "is_available": True,
+                "stock": 110
             }
         ]
         
@@ -123,7 +166,8 @@ async def check_payment_status_demo(order_number: str):
     # Store the start time for this order
     active_payment_checks[order_number] = {
         'start_time': time.time(),
-        'status': 'processing'
+        'status': 'processing',
+        'last_update': datetime.now().isoformat()
     }
     
     # Simulate payment processing time (5-15 seconds)
@@ -134,9 +178,11 @@ async def check_payment_status_demo(order_number: str):
     db_order = await crud.update_order_payment_status(database, order_number, "paid", "demo_md5_hash")
     if db_order:
         active_payment_checks[order_number]['status'] = 'paid'
+        active_payment_checks[order_number]['last_update'] = datetime.now().isoformat()
         print(f"✅ Demo payment confirmed for order {order_number}")
     else:
         active_payment_checks[order_number]['status'] = 'failed'
+        active_payment_checks[order_number]['last_update'] = datetime.now().isoformat()
         print(f"❌ Failed to update payment status for order {order_number}")
 
 # ========== PUBLIC ENDPOINTS ==========
@@ -167,7 +213,76 @@ async def get_products_by_category(category: str, db = Depends(get_db)):
     filtered_products = [product for product in products if product.category == category]
     return filtered_products
 
-# ========== CART ENDPOINTS ==========
+# ========== SESSION CART ENDPOINTS (For Frontend) ==========
+@app.get("/api/v1/cart/session/{session_id}")
+async def get_session_cart(session_id: str):
+    """Get cart items for a specific session (frontend user)"""
+    if session_id in user_carts:
+        return {
+            "session_id": session_id,
+            "items": user_carts[session_id],
+            "total_items": len(user_carts[session_id]),
+            "timestamp": datetime.now().isoformat()
+        }
+    return {
+        "session_id": session_id,
+        "items": [],
+        "total_items": 0,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/api/v1/cart/session/{session_id}/add")
+async def add_to_session_cart(session_id: str, item: dict):
+    """Add item to session cart"""
+    if session_id not in user_carts:
+        user_carts[session_id] = []
+    
+    # Check if item already exists in cart
+    for cart_item in user_carts[session_id]:
+        if cart_item.get('product_id') == item.get('product_id'):
+            cart_item['quantity'] += item.get('quantity', 1)
+            return {
+                "session_id": session_id,
+                "message": "Item quantity updated",
+                "total_items": len(user_carts[session_id])
+            }
+    
+    # Add new item
+    item['id'] = len(user_carts[session_id]) + 1
+    item['added_at'] = datetime.now().isoformat()
+    user_carts[session_id].append(item)
+    
+    return {
+        "session_id": session_id,
+        "message": "Item added to cart",
+        "total_items": len(user_carts[session_id])
+    }
+
+@app.delete("/api/v1/cart/session/{session_id}/item/{item_id}")
+async def remove_from_session_cart(session_id: str, item_id: int):
+    """Remove item from session cart"""
+    if session_id in user_carts:
+        user_carts[session_id] = [item for item in user_carts[session_id] if item.get('id') != item_id]
+        return {
+            "session_id": session_id,
+            "message": "Item removed from cart",
+            "total_items": len(user_carts[session_id])
+        }
+    return {"message": "Session not found"}
+
+@app.delete("/api/v1/cart/session/{session_id}/clear")
+async def clear_session_cart(session_id: str):
+    """Clear session cart"""
+    if session_id in user_carts:
+        user_carts[session_id] = []
+        return {
+            "session_id": session_id,
+            "message": "Cart cleared",
+            "total_items": 0
+        }
+    return {"message": "Session not found"}
+
+# ========== DATABASE CART ENDPOINTS ==========
 @app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
 async def read_cart_items(skip: int = 0, limit: int = 100, db = Depends(get_db)):
     return await crud.get_cart_items(db, skip=skip, limit=limit)
@@ -314,6 +429,66 @@ async def get_active_payments():
         "total_active": len(active_payment_checks)
     }
 
+# ========== FRONTEND UTILITY ENDPOINTS ==========
+@app.get("/api/v1/frontend/config")
+async def get_frontend_config():
+    """Get frontend configuration"""
+    return {
+        "api_url": "https://your-backend-url.vercel.app",  # Update this with your actual backend URL
+        "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
+        "features": {
+            "khqr_payments": True,
+            "cart_session": True,
+            "order_tracking": True,
+            "admin_panel": True
+        },
+        "demo_mode": True,
+        "version": "1.0.0"
+    }
+
+@app.post("/api/v1/frontend/checkout")
+async def frontend_checkout(checkout_data: dict):
+    """Simplified checkout for frontend"""
+    try:
+        # Generate order number
+        order_number = f"ORD-{int(datetime.now().timestamp())}-{uuid.uuid4().hex[:6].upper()}"
+        
+        # Create order data
+        order_data = schemas.OrderCreate(
+            customer_name=checkout_data.get('customer_name', 'Guest'),
+            customer_phone=checkout_data.get('customer_phone', ''),
+            customer_email=checkout_data.get('customer_email', ''),
+            delivery_address=checkout_data.get('delivery_address', ''),
+            total_amount=checkout_data.get('total_amount', 0),
+            currency=checkout_data.get('currency', 'USD'),
+            items=checkout_data.get('items', []),
+            payment_method=checkout_data.get('payment_method', 'khqr'),
+            notes=checkout_data.get('notes', '')
+        )
+        
+        # Create order
+        db_order = await crud.create_order(database, order_data)
+        
+        if db_order:
+            return {
+                "success": True,
+                "order_number": db_order['order_number'],
+                "message": "Order created successfully",
+                "redirect_url": f"/order/{db_order['order_number']}"
+            }
+        
+        return {
+            "success": False,
+            "message": "Failed to create order"
+        }
+        
+    except Exception as e:
+        print(f"Checkout error: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Checkout failed: {str(e)}"
+        }
+
 # ========== ROOT ENDPOINTS ==========
 @app.get("/")
 async def read_root():
@@ -323,15 +498,20 @@ async def read_root():
         "khqr_available": KHQR_AVAILABLE,
         "mode": "DEMO",
         "active_payments": len(active_payment_checks),
+        "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
+        "cors_enabled": True,
         "endpoints": {
             "docs": "/docs",
             "products": "/api/v1/products/",
-            "cart": "/api/v1/cart/",
+            "categories": "/api/v1/categories/",
+            "session_cart": "/api/v1/cart/session/{session_id}",
             "orders": "/api/v1/orders/",
-            "khqr": "/api/v1/khqr/",
+            "khqr": "/api/v1/khqr/generate",
             "payments": "/api/v1/payments/",
             "admin": "/api/v1/admin/",
-            "admin_docs": "/api/v1/admin/docs"
+            "admin_docs": "/api/v1/admin/docs",
+            "frontend_config": "/api/v1/frontend/config",
+            "health": "/health"
         }
     }
 
@@ -349,6 +529,13 @@ async def health_check():
         "khqr_available": KHQR_AVAILABLE,
         "mode": "DEMO",
         "active_payments": len(active_payment_checks),
+        "active_sessions": len(user_carts),
+        "cors": {
+            "allowed_origins": [
+                "https://frontend-coffee-backendg2.vercel.app",
+                "https://frontend-admin-coffee-backendg2-ce1.vercel.app"
+            ]
+        },
         "timestamp": datetime.now().isoformat()
     }
 
@@ -368,4 +555,9 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=10000,
+        reload=True  # Auto-reload for development
+    )
