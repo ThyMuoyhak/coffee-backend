@@ -63,64 +63,119 @@ async def shutdown():
 
 # Create sample data and default admin
 async def create_sample_data():
-    # Check if default admin exists
-    default_admin = await crud.get_admin_by_email(database, "admin@gmail.com")
-    if not default_admin:
-        # Create default admin
-        admin_data = schemas.AdminUserCreate(
-            email="admin@gmail.com",
-            password="11112222",
-            full_name="System Administrator",
-            role="super_admin"
-        )
-        await crud.create_admin_user(database, admin_data)
-        print("✅ Default admin created: admin@gmail.com / 11112222")
+    """Create sample data and ensure default admin exists"""
+    print("\n🔄 Setting up sample data...")
     
-    # Check if products already exist
-    total_products = await database.fetch_val("SELECT COUNT(*) FROM coffee_products")
-    if total_products == 0:
-        sample_products = [
-            {
-                "name": "Mondulkiri Arabica",
-                "price": 4.50,
-                "image": "https://images.unsplash.com/photo-1587734195503-904fca47e0e9?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Single origin from Cambodian highlands with rich flavor notes",
-                "category": "Hot Coffee",
-                "rating": 4.8,
-                "brew_time": "4-5 min",
-                "is_available": True,
-                "stock": 100
-            },
-            {
-                "name": "Phnom Penh Cold Brew",
-                "price": 5.25,
-                "image": "https://images.unsplash.com/photo-1461023058943-07fcbe16d735?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Smooth 12-hour cold extraction with chocolate undertones",
-                "category": "Cold Brew",
-                "rating": 4.9,
-                "brew_time": "12 hours",
-                "is_available": True,
-                "stock": 85
-            },
-            {
-                "name": "Siem Reap Robusta",
-                "price": 3.75,
-                "image": "https://images.unsplash.com/photo-1572442388796-11668a67e53d?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Strong and bold traditional Cambodian blend",
-                "category": "Hot Coffee",
-                "rating": 4.6,
-                "brew_time": "3-4 min",
-                "is_available": True,
-                "stock": 120
+    # ========== CREATE DEFAULT ADMIN ==========
+    print("👤 Checking/creating default admin...")
+    
+    try:
+        # First, check if admin exists with wrong hash (60 chars = bcrypt)
+        check_query = "SELECT email, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = 'admin@gmail.com'"
+        existing_admin = await database.fetch_one(check_query)
+        
+        if existing_admin:
+            hash_len = existing_admin['hash_len']
+            print(f"📊 Existing admin found with hash length: {hash_len}")
+            
+            if hash_len == 60:  # Old bcrypt hash
+                print("⚠️ Found old bcrypt hash, deleting...")
+                delete_query = "DELETE FROM admin_users WHERE email = 'admin@gmail.com'"
+                await database.execute(delete_query)
+                print("🧹 Old admin deleted")
+                existing_admin = None
+        
+        # Create admin if doesn't exist or was deleted
+        if not existing_admin:
+            print("👤 Creating new admin with SHA256 hash...")
+            
+            # Hash the password manually with SHA256
+            import hashlib
+            salt = "brewhaven-coffee-shop-salt"
+            password = "11112222"
+            hashed_password = hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
+            
+            print(f"🔑 Generated hash: {hashed_password[:50]}...")
+            print(f"📏 Hash length: {len(hashed_password)} characters")
+            
+            # Insert admin directly
+            insert_query = """
+            INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+            VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+            """
+            
+            await database.execute(
+                query=insert_query,
+                values={
+                    "email": "admin@gmail.com",
+                    "hashed_password": hashed_password,
+                    "full_name": "System Administrator",
+                    "role": "super_admin",
+                    "is_active": True,
+                    "created_at": datetime.utcnow()
+                }
+            )
+            
+            print("✅ Default admin created successfully!")
+            print(f"   Email: admin@gmail.com")
+            print(f"   Password: 11112222")
+            
+        else:
+            print("✅ Admin already exists with correct hash")
+            
+    except Exception as e:
+        print(f"❌ Error creating admin: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ========== CREATE SAMPLE PRODUCTS ==========
+    # ... rest of your product creation code ...
+    
+@app.get("/reset-admin")
+async def reset_admin_endpoint():
+    """Endpoint to reset admin password (for debugging)"""
+    try:
+        import hashlib
+        
+        # Delete existing admin
+        await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
+        
+        # Create new admin with SHA256
+        salt = "brewhaven-coffee-shop-salt"
+        password = "11112222"
+        hashed_password = hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
+        
+        insert_query = """
+        INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+        VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+        """
+        
+        await database.execute(
+            query=insert_query,
+            values={
+                "email": "admin@gmail.com",
+                "hashed_password": hashed_password,
+                "full_name": "System Administrator",
+                "role": "super_admin",
+                "is_active": True,
+                "created_at": datetime.utcnow()
             }
-        ]
+        )
         
-        for product in sample_products:
-            query = CoffeeProduct.__table__.insert().values(**product)
-            await database.execute(query)
+        return {
+            "success": True,
+            "message": "Admin reset successfully",
+            "email": "admin@gmail.com",
+            "password": "11112222",
+            "hash_length": len(hashed_password)
+        }
         
-        print("✅ Sample coffee products created!")
-
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+    
 # Background task to check payment status (demo version)
 async def check_payment_status_demo(order_number: str):
     """Demo version that simulates payment confirmation"""
