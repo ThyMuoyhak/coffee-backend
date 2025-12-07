@@ -1,7 +1,7 @@
-# main.py
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
+# main.py (updated CORS configuration)
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse
 from database import database, engine, Base, get_db
 from models import CoffeeProduct, CartItem, Order, AdminUser
 import schemas
@@ -25,27 +25,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware - ALLOW ALL FRONTEND DOMAINS
+# CORS middleware - UPDATED for specific frontend URLs
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://frontend-coffee-backendg2.vercel.app",
         "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
-        "https://frontend-coffee-backendg2-git-main-username.vercel.app",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",  # Vite dev server
-        "http://127.0.0.1:5173",  # Vite dev server
+        "https://frontend-coffee-backendg2.vercel.app",
+        "http://localhost:3000",  # For local development
+        "http://127.0.0.1:3000",  # For local development
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"],
-    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 # Include admin router
-app.include_router(admin_router, prefix="/api/v1/admin")
+app.include_router(admin_router, prefix="/api/v1")
 
 # KHQR Configuration - Simplified for deployment
 KHQR_AVAILABLE = False
@@ -55,24 +50,16 @@ print("🔄 Running in DEMO mode - KHQR payments will be simulated")
 # Store active payment checks (in production, use Redis or database)
 active_payment_checks = {}
 
-# Store session cart (in production, use Redis or database)
-user_carts = {}
-
 # Startup event
 @app.on_event("startup")
 async def startup():
     await database.connect()
     await create_sample_data()
-    print(f"✅ Backend started successfully")
-    print(f"🌐 API URL: http://0.0.0.0:{os.getenv('PORT', 10000)}")
-    print(f"📚 Documentation: http://0.0.0.0:{os.getenv('PORT', 10000)}/docs")
-    print(f"🔧 Environment: {'Production' if os.getenv('RENDER') else 'Development'}")
 
 # Shutdown event
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
-    print("🛑 Backend shutdown complete")
 
 # Create sample data and default admin
 async def create_sample_data():
@@ -125,39 +112,6 @@ async def create_sample_data():
                 "brew_time": "3-4 min",
                 "is_available": True,
                 "stock": 120
-            },
-            {
-                "name": "Angkor Wat Espresso",
-                "price": 3.50,
-                "image": "https://images.unsplash.com/photo-1510707577719-ae7c9b788690?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Intense and aromatic espresso shot",
-                "category": "Espresso",
-                "rating": 4.7,
-                "brew_time": "30 sec",
-                "is_available": True,
-                "stock": 90
-            },
-            {
-                "name": "Tonle Sap Cappuccino",
-                "price": 4.25,
-                "image": "https://images.unsplash.com/photo-1561047029-3000c68339ca?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Creamy cappuccino with a perfect foam layer",
-                "category": "Milk Coffee",
-                "rating": 4.8,
-                "brew_time": "5-6 min",
-                "is_available": True,
-                "stock": 75
-            },
-            {
-                "name": "Kampot Iced Coffee",
-                "price": 4.00,
-                "image": "https://images.unsplash.com/photo-1466637574441-749b8f19452f?ixlib=rb-4.0.3&auto=format&fit=crop&w=500&q=80",
-                "description": "Refreshing iced coffee with sweet condensed milk",
-                "category": "Iced Coffee",
-                "rating": 4.9,
-                "brew_time": "3-4 min",
-                "is_available": True,
-                "stock": 110
             }
         ]
         
@@ -175,8 +129,7 @@ async def check_payment_status_demo(order_number: str):
     # Store the start time for this order
     active_payment_checks[order_number] = {
         'start_time': time.time(),
-        'status': 'processing',
-        'last_update': datetime.now().isoformat()
+        'status': 'processing'
     }
     
     # Simulate payment processing time (5-15 seconds)
@@ -187,11 +140,9 @@ async def check_payment_status_demo(order_number: str):
     db_order = await crud.update_order_payment_status(database, order_number, "paid", "demo_md5_hash")
     if db_order:
         active_payment_checks[order_number]['status'] = 'paid'
-        active_payment_checks[order_number]['last_update'] = datetime.now().isoformat()
         print(f"✅ Demo payment confirmed for order {order_number}")
     else:
         active_payment_checks[order_number]['status'] = 'failed'
-        active_payment_checks[order_number]['last_update'] = datetime.now().isoformat()
         print(f"❌ Failed to update payment status for order {order_number}")
 
 # ========== PUBLIC ENDPOINTS ==========
@@ -222,76 +173,7 @@ async def get_products_by_category(category: str, db = Depends(get_db)):
     filtered_products = [product for product in products if product.category == category]
     return filtered_products
 
-# ========== SESSION CART ENDPOINTS (For Frontend) ==========
-@app.get("/api/v1/cart/session/{session_id}")
-async def get_session_cart(session_id: str):
-    """Get cart items for a specific session (frontend user)"""
-    if session_id in user_carts:
-        return {
-            "session_id": session_id,
-            "items": user_carts[session_id],
-            "total_items": len(user_carts[session_id]),
-            "timestamp": datetime.now().isoformat()
-        }
-    return {
-        "session_id": session_id,
-        "items": [],
-        "total_items": 0,
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.post("/api/v1/cart/session/{session_id}/add")
-async def add_to_session_cart(session_id: str, item: dict):
-    """Add item to session cart"""
-    if session_id not in user_carts:
-        user_carts[session_id] = []
-    
-    # Check if item already exists in cart
-    for cart_item in user_carts[session_id]:
-        if cart_item.get('product_id') == item.get('product_id'):
-            cart_item['quantity'] += item.get('quantity', 1)
-            return {
-                "session_id": session_id,
-                "message": "Item quantity updated",
-                "total_items": len(user_carts[session_id])
-            }
-    
-    # Add new item
-    item['id'] = len(user_carts[session_id]) + 1
-    item['added_at'] = datetime.now().isoformat()
-    user_carts[session_id].append(item)
-    
-    return {
-        "session_id": session_id,
-        "message": "Item added to cart",
-        "total_items": len(user_carts[session_id])
-    }
-
-@app.delete("/api/v1/cart/session/{session_id}/item/{item_id}")
-async def remove_from_session_cart(session_id: str, item_id: int):
-    """Remove item from session cart"""
-    if session_id in user_carts:
-        user_carts[session_id] = [item for item in user_carts[session_id] if item.get('id') != item_id]
-        return {
-            "session_id": session_id,
-            "message": "Item removed from cart",
-            "total_items": len(user_carts[session_id])
-        }
-    return {"message": "Session not found"}
-
-@app.delete("/api/v1/cart/session/{session_id}/clear")
-async def clear_session_cart(session_id: str):
-    """Clear session cart"""
-    if session_id in user_carts:
-        user_carts[session_id] = []
-        return {
-            "session_id": session_id,
-            "message": "Cart cleared",
-            "total_items": 0
-        }
-    return {"message": "Session not found"}
-
-# ========== DATABASE CART ENDPOINTS ==========
+# ========== CART ENDPOINTS ==========
 @app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
 async def read_cart_items(skip: int = 0, limit: int = 100, db = Depends(get_db)):
     return await crud.get_cart_items(db, skip=skip, limit=limit)
@@ -438,71 +320,6 @@ async def get_active_payments():
         "total_active": len(active_payment_checks)
     }
 
-# ========== FRONTEND UTILITY ENDPOINTS ==========
-@app.get("/api/v1/frontend/config")
-async def get_frontend_config():
-    """Get frontend configuration"""
-    current_url = os.getenv("RENDER_EXTERNAL_URL", "https://coffee-backend-1.onrender.com")
-    
-    return {
-        "api_url": current_url,
-        "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
-        "admin_url": "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
-        "features": {
-            "khqr_payments": True,
-            "cart_session": True,
-            "order_tracking": True,
-            "admin_panel": True
-        },
-        "demo_mode": True,
-        "version": "1.0.0",
-        "cors_enabled": True,
-        "status": "operational"
-    }
-
-@app.post("/api/v1/frontend/checkout")
-async def frontend_checkout(checkout_data: dict):
-    """Simplified checkout for frontend"""
-    try:
-        # Generate order number
-        order_number = f"ORD-{int(datetime.now().timestamp())}-{uuid.uuid4().hex[:6].upper()}"
-        
-        # Create order data
-        order_data = schemas.OrderCreate(
-            customer_name=checkout_data.get('customer_name', 'Guest'),
-            customer_phone=checkout_data.get('customer_phone', ''),
-            customer_email=checkout_data.get('customer_email', ''),
-            delivery_address=checkout_data.get('delivery_address', ''),
-            total_amount=checkout_data.get('total_amount', 0),
-            currency=checkout_data.get('currency', 'USD'),
-            items=checkout_data.get('items', []),
-            payment_method=checkout_data.get('payment_method', 'khqr'),
-            notes=checkout_data.get('notes', '')
-        )
-        
-        # Create order
-        db_order = await crud.create_order(database, order_data)
-        
-        if db_order:
-            return {
-                "success": True,
-                "order_number": db_order['order_number'],
-                "message": "Order created successfully",
-                "redirect_url": f"/order/{db_order['order_number']}"
-            }
-        
-        return {
-            "success": False,
-            "message": "Failed to create order"
-        }
-        
-    except Exception as e:
-        print(f"Checkout error: {str(e)}")
-        return {
-            "success": False,
-            "message": f"Checkout failed: {str(e)}"
-        }
-
 # ========== ROOT ENDPOINTS ==========
 @app.get("/")
 async def read_root():
@@ -510,68 +327,43 @@ async def read_root():
         "message": "Welcome to BrewHaven Coffee Shop API",
         "version": "1.0.0",
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO" if KHQR_AVAILABLE else "PRODUCTION",
+        "mode": "DEMO",
         "active_payments": len(active_payment_checks),
-        "active_sessions": len(user_carts),
-        "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
-        "admin_url": "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
-        "cors_enabled": True,
+        "frontend_urls": [
+            "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
+            "https://frontend-coffee-backendg2.vercel.app"
+        ],
         "endpoints": {
             "docs": "/docs",
             "products": "/api/v1/products/",
-            "categories": "/api/v1/categories/",
-            "session_cart": "/api/v1/cart/session/{session_id}",
+            "cart": "/api/v1/cart/",
             "orders": "/api/v1/orders/",
             "khqr": "/api/v1/khqr/generate",
-            "payments": "/api/v1/payments/",
+            "payments": "/api/v1/payments/active",
             "admin": "/api/v1/admin/",
-            "admin_docs": "/api/v1/admin/docs",
-            "frontend_config": "/api/v1/frontend/config",
-            "health": "/health"
+            "admin_docs": "/api/v1/admin/docs"
         }
     }
 
-@app.get("/health", include_in_schema=False)
+@app.get("/health")
 async def health_check():
     db_status = "connected"
     try:
         await database.execute("SELECT 1")
-    except Exception as e:
-        db_status = f"disconnected: {str(e)}"
-    
-    # Get current URL
-    current_url = os.getenv("RENDER_EXTERNAL_URL", "Unknown")
-    
+    except:
+        db_status = "disconnected"
+        
     return {
-        "status": "healthy",
-        "database": db_status,
+        "status": "healthy", 
+        "database": db_status, 
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO" if KHQR_AVAILABLE else "PRODUCTION",
+        "mode": "DEMO",
         "active_payments": len(active_payment_checks),
-        "active_sessions": len(user_carts),
         "timestamp": datetime.now().isoformat(),
-        "url": current_url,
-        "environment": "production" if os.getenv("RENDER") else "development",
-        "cors": {
-            "allowed_origins": [
-                "https://frontend-coffee-backendg2.vercel.app",
-                "https://frontend-admin-coffee-backendg2-ce1.vercel.app"
-            ]
-        }
-    }
-
-# Special endpoint for connection testing
-@app.get("/api/v1/test-connection")
-async def test_connection(request: Request):
-    client_host = request.client.host if request.client else "unknown"
-    
-    return {
-        "success": True,
-        "message": "Backend is running!",
-        "timestamp": datetime.now().isoformat(),
-        "client_ip": client_host,
-        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "endpoints_available": True
+        "allowed_origins": [
+            "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
+            "https://frontend-coffee-backendg2.vercel.app"
+        ]
     }
 
 # Global exception handler
@@ -590,17 +382,4 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Get port from environment variable (Render provides PORT)
-    port = int(os.getenv("PORT", 10000))
-    
-    print(f"🚀 Starting BrewHaven Coffee Shop API on port {port}")
-    print(f"📡 Server will be accessible at: http://0.0.0.0:{port}")
-    print(f"📚 API Documentation: http://0.0.0.0:{port}/docs")
-    
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        reload=not bool(os.getenv("RENDER"))  # Auto-reload only in development
-    )
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
