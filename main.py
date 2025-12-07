@@ -1,7 +1,7 @@
 # main.py
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from database import database, engine, Base, get_db
 from models import CoffeeProduct, CartItem, Order, AdminUser
 import schemas
@@ -14,6 +14,7 @@ import json
 import time
 from typing import List
 import traceback
+import os
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -24,24 +25,27 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware - SPECIFICALLY ALLOW YOUR FRONTEND DOMAIN
+# CORS middleware - ALLOW ALL FRONTEND DOMAINS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://frontend-coffee-backendg2.vercel.app",
         "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
-        "http://localhost:3000",  # For local development
+        "https://frontend-coffee-backendg2-git-main-username.vercel.app",
+        "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:5173",  # Vite dev server
+        "http://127.0.0.1:5173",  # Vite dev server
     ],
-    # You can also use regex patterns or environment variables
-    # allow_origin_regex=r"https://frontend-coffee-backendg2.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 # Include admin router
-app.include_router(admin_router)
+app.include_router(admin_router, prefix="/api/v1/admin")
 
 # KHQR Configuration - Simplified for deployment
 KHQR_AVAILABLE = False
@@ -59,11 +63,16 @@ user_carts = {}
 async def startup():
     await database.connect()
     await create_sample_data()
+    print(f"✅ Backend started successfully")
+    print(f"🌐 API URL: http://0.0.0.0:{os.getenv('PORT', 10000)}")
+    print(f"📚 Documentation: http://0.0.0.0:{os.getenv('PORT', 10000)}/docs")
+    print(f"🔧 Environment: {'Production' if os.getenv('RENDER') else 'Development'}")
 
 # Shutdown event
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
+    print("🛑 Backend shutdown complete")
 
 # Create sample data and default admin
 async def create_sample_data():
@@ -433,9 +442,12 @@ async def get_active_payments():
 @app.get("/api/v1/frontend/config")
 async def get_frontend_config():
     """Get frontend configuration"""
+    current_url = os.getenv("RENDER_EXTERNAL_URL", "https://coffee-backend-1.onrender.com")
+    
     return {
-        "api_url": "https://your-backend-url.vercel.app",  # Update this with your actual backend URL
+        "api_url": current_url,
         "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
+        "admin_url": "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
         "features": {
             "khqr_payments": True,
             "cart_session": True,
@@ -443,7 +455,9 @@ async def get_frontend_config():
             "admin_panel": True
         },
         "demo_mode": True,
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "cors_enabled": True,
+        "status": "operational"
     }
 
 @app.post("/api/v1/frontend/checkout")
@@ -496,9 +510,11 @@ async def read_root():
         "message": "Welcome to BrewHaven Coffee Shop API",
         "version": "1.0.0",
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO",
+        "mode": "DEMO" if KHQR_AVAILABLE else "PRODUCTION",
         "active_payments": len(active_payment_checks),
+        "active_sessions": len(user_carts),
         "frontend_url": "https://frontend-coffee-backendg2.vercel.app",
+        "admin_url": "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
         "cors_enabled": True,
         "endpoints": {
             "docs": "/docs",
@@ -515,28 +531,47 @@ async def read_root():
         }
     }
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 async def health_check():
     db_status = "connected"
     try:
         await database.execute("SELECT 1")
-    except:
-        db_status = "disconnected"
-        
+    except Exception as e:
+        db_status = f"disconnected: {str(e)}"
+    
+    # Get current URL
+    current_url = os.getenv("RENDER_EXTERNAL_URL", "Unknown")
+    
     return {
-        "status": "healthy", 
-        "database": db_status, 
+        "status": "healthy",
+        "database": db_status,
         "khqr_available": KHQR_AVAILABLE,
-        "mode": "DEMO",
+        "mode": "DEMO" if KHQR_AVAILABLE else "PRODUCTION",
         "active_payments": len(active_payment_checks),
         "active_sessions": len(user_carts),
+        "timestamp": datetime.now().isoformat(),
+        "url": current_url,
+        "environment": "production" if os.getenv("RENDER") else "development",
         "cors": {
             "allowed_origins": [
                 "https://frontend-coffee-backendg2.vercel.app",
-                "http://localhost:3000"
+                "https://frontend-admin-coffee-backendg2-ce1.vercel.app"
             ]
-        },
-        "timestamp": datetime.now().isoformat()
+        }
+    }
+
+# Special endpoint for connection testing
+@app.get("/api/v1/test-connection")
+async def test_connection(request: Request):
+    client_host = request.client.host if request.client else "unknown"
+    
+    return {
+        "success": True,
+        "message": "Backend is running!",
+        "timestamp": datetime.now().isoformat(),
+        "client_ip": client_host,
+        "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoints_available": True
     }
 
 # Global exception handler
@@ -555,9 +590,17 @@ async def global_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
+    
+    # Get port from environment variable (Render provides PORT)
+    port = int(os.getenv("PORT", 10000))
+    
+    print(f"🚀 Starting BrewHaven Coffee Shop API on port {port}")
+    print(f"📡 Server will be accessible at: http://0.0.0.0:{port}")
+    print(f"📚 API Documentation: http://0.0.0.0:{port}/docs")
+    
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=10000,
-        reload=True  # Auto-reload for development
+        app,
+        host="0.0.0.0",
+        port=port,
+        reload=not bool(os.getenv("RENDER"))  # Auto-reload only in development
     )
