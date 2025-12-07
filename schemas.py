@@ -1,5 +1,4 @@
-# schemas.py
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -15,8 +14,7 @@ class CoffeeProductBase(BaseModel):
     is_available: bool = True
     stock: int = 100
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CoffeeProductCreate(CoffeeProductBase):
     pass
@@ -46,8 +44,7 @@ class CartItemBase(BaseModel):
     sugar_level: str = "regular"
     image: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CartItemCreate(CartItemBase):
     pass
@@ -67,8 +64,7 @@ class OrderBase(BaseModel):
     payment_method: str = "khqr"
     notes: Optional[str] = ""
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class OrderCreate(OrderBase):
     pass
@@ -88,7 +84,8 @@ class Order(OrderBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    @validator('status', 'payment_status', pre=True, always=True)
+    @field_validator('status', 'payment_status', mode='before')
+    @classmethod
     def set_default_status(cls, v):
         return v or "pending"
 
@@ -115,8 +112,7 @@ class AdminUserBase(BaseModel):
     full_name: Optional[str] = None
     role: str = "admin"
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class AdminUserCreate(AdminUserBase):
     password: str = Field(..., min_length=6)
