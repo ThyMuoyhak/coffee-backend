@@ -5,7 +5,7 @@ warnings.filterwarnings("ignore", message="Valid config keys have changed in V2"
 import os
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import database, engine, Base
 import schemas
@@ -48,19 +48,13 @@ app.add_middleware(
         "https://frontend-coffee-backendg2.vercel.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "*"  # Allow all for testing
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
-
-# Import routers
-try:
-    from admin_api import router as admin_router
-    if admin_router:
-        app.include_router(admin_router)
-except ImportError:
-    pass
 
 print("🔄 BrewHaven Coffee Shop API starting...")
 
@@ -136,7 +130,7 @@ async def create_sample_data():
     print("👤 Checking/creating default admin...")
     
     try:
-        check_query = "SELECT email FROM admin_users WHERE email = 'admin@gmail.com'"
+        check_query = "SELECT email, hashed_password FROM admin_users WHERE email = 'admin@gmail.com'"
         existing_admin = await database.fetch_one(check_query)
         
         if not existing_admin:
@@ -144,6 +138,8 @@ async def create_sample_data():
             
             password = "11112222"
             hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+            
+            print(f"🔑 Generated hash: {hashed_password[:50]}...")
             
             insert_query = """
             INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
@@ -166,54 +162,12 @@ async def create_sample_data():
             print(f"   Email: admin@gmail.com")
             print(f"   Password: 11112222")
         else:
-            print("✅ Admin already exists")
+            print(f"✅ Admin already exists")
+            print(f"   Hash stored: {existing_admin['hashed_password'][:50]}...")
             
     except Exception as e:
         print(f"❌ Error creating admin: {e}")
-    
-    # Create sample products
-    print("📦 Checking/creating sample products...")
-    try:
-        product_count = await database.fetch_val("SELECT COUNT(*) FROM coffee_products")
-        if product_count == 0:
-            sample_products = [
-                {
-                    "name": "Espresso",
-                    "price": 3.50,
-                    "image": "https://images.unsplash.com/photo-1510591509098-f4fdc6d0ff04",
-                    "description": "Strong and concentrated coffee",
-                    "category": "espresso",
-                    "rating": 4.8,
-                    "brew_time": "25s",
-                    "is_available": True,
-                    "stock": 100
-                },
-                {
-                    "name": "Cappuccino",
-                    "price": 4.50,
-                    "image": "https://images.unsplash.com/photo-1534778101976-62847782c213",
-                    "description": "Espresso with steamed milk foam",
-                    "category": "milk",
-                    "rating": 4.7,
-                    "brew_time": "3m",
-                    "is_available": True,
-                    "stock": 80
-                }
-            ]
-            
-            for product in sample_products:
-                await database.execute(
-                    query="""
-                    INSERT INTO coffee_products (name, price, image, description, category, rating, brew_time, is_available, stock, created_at)
-                    VALUES (:name, :price, :image, :description, :category, :rating, :brew_time, :is_available, :stock, :created_at)
-                    """,
-                    values={**product, "created_at": datetime.utcnow()}
-                )
-            print(f"✅ Created {len(sample_products)} sample products")
-        else:
-            print(f"✅ {product_count} products already exist")
-    except Exception as e:
-        print(f"❌ Error creating sample products: {e}")
+        traceback.print_exc()
 
 # Background task for demo payments
 async def check_payment_status_demo(order_number: str):
@@ -235,15 +189,22 @@ async def check_payment_status_demo(order_number: str):
         active_payment_checks[order_number]['status'] = 'failed'
         print(f"❌ Failed to update payment status for order {order_number}")
 
-# ========== AUTHENTICATION ENDPOINTS ==========
-@app.post("/api/v1/auth/login")
-async def admin_login(login_data: schemas.AdminLogin):
-    """Admin login endpoint"""
+# ========== FIXED AUTHENTICATION ENDPOINTS ==========
+
+# Endpoint 1: /api/v1/admin/login (for admin panel)
+@app.post("/api/v1/admin/login", response_model=schemas.Token)
+async def admin_login_admin_panel(login_data: schemas.AdminLogin):
+    """Admin login endpoint for admin panel"""
     try:
+        print(f"🔐 Admin panel login attempt for: {login_data.email}")
+        
         admin = await crud.authenticate_admin(database, login_data.email, login_data.password)
         
         if not admin:
+            print(f"❌ Authentication failed for: {login_data.email}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print(f"✅ Admin authenticated: {admin['email']}")
         
         await crud.update_admin_last_login(database, admin["id"])
         
@@ -264,13 +225,55 @@ async def admin_login(login_data: schemas.AdminLogin):
             }
         }
         
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        print(f"❌ HTTP Exception during login: {e.detail}")
+        raise e
     except Exception as e:
         print(f"❌ Login error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
-@app.get("/api/v1/auth/me")
+# Endpoint 2: /api/v1/auth/login (original endpoint)
+@app.post("/api/v1/auth/login", response_model=schemas.Token)
+async def admin_login(login_data: schemas.AdminLogin):
+    """Admin login endpoint (original)"""
+    try:
+        print(f"🔐 Auth login attempt for: {login_data.email}")
+        
+        admin = await crud.authenticate_admin(database, login_data.email, login_data.password)
+        
+        if not admin:
+            print(f"❌ Authentication failed for: {login_data.email}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print(f"✅ Admin authenticated: {admin['email']}")
+        
+        await crud.update_admin_last_login(database, admin["id"])
+        
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": admin["email"], "role": admin["role"]},
+            expires_delta=access_token_expires
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "admin": {
+                "id": admin["id"],
+                "email": admin["email"],
+                "full_name": admin["full_name"],
+                "role": admin["role"]
+            }
+        }
+        
+    except HTTPException as e:
+        print(f"❌ HTTP Exception during login: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"❌ Login error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+@app.get("/api/v1/auth/me", response_model=schemas.AdminUser)
 async def get_current_admin_info(current_admin = Depends(get_current_admin)):
     """Get current admin information"""
     return {
@@ -288,6 +291,39 @@ async def admin_logout(current_admin = Depends(get_current_admin)):
     return {"message": "Successfully logged out"}
 
 # ========== PUBLIC PRODUCT ENDPOINTS ==========
+@app.get("/api/v1/products/", response_model=List[schemas.CoffeeProduct])
+async def read_products(skip: int = 0, limit: int = 100):
+    try:
+        products = await crud.get_products(database, skip=skip, limit=limit)
+        print(f"✅ Returning {len(products)} products")
+        return products
+    except Exception as e:
+        print(f"❌ Error getting products: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/products/{product_id}", response_model=schemas.CoffeeProduct)
+async def read_product(product_id: int):
+    db_product = await crud.get_product(database, product_id=product_id)
+    if db_product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return db_product
+
+@app.post("/api/v1/products/", response_model=schemas.CoffeeProduct)
+async def create_product(product: schemas.CoffeeProductCreate):
+    return await crud.create_product(database, product=product)
+
+@app.get("/api/v1/categories/")
+async def get_categories():
+    products = await crud.get_products(database)
+    categories = list(set(product.get("category", "") for product in products if product.get("category")))
+    categories = [cat for cat in categories if cat]  # Remove empty strings
+    return {"categories": categories}
+
+@app.get("/api/v1/products/category/{category}")
+async def get_products_by_category(category: str):
+    products = await crud.get_products(database)
+    filtered_products = [product for product in products if product.get("category") == category]
+    return filtered_products
 
 # ========== CART ENDPOINTS ==========
 @app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
@@ -392,45 +428,23 @@ async def get_payment_status(order_number: str):
         print(f"❌ Payment status check failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Payment status check failed: {str(e)}")
 
-# ========== PROTECTED ENDPOINTS (Admin Only) ==========
-@app.put("/api/v1/admin/products/{product_id}", response_model=schemas.CoffeeProduct)
-async def update_product_admin(
-    product_id: int, 
-    product: schemas.CoffeeProductUpdate,
-    current_admin = Depends(get_current_admin)
-):
-    """Update product (Admin only)"""
-    db_product = await crud.update_product(database, product_id=product_id, product_update=product)
-    if db_product is None:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return db_product
+# ========== ADMIN MANAGEMENT ENDPOINTS ==========
+@app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
+async def get_admin_me(current_admin = Depends(get_current_admin)):
+    """Get current admin info for admin panel"""
+    return current_admin
 
-@app.delete("/api/v1/admin/products/{product_id}")
-async def delete_product_admin(
-    product_id: int,
-    current_admin = Depends(get_current_admin)
-):
-    """Delete product (Admin only)"""
-    success = await crud.delete_product(database, product_id=product_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return {"message": "Product deleted successfully"}
+@app.get("/api/v1/admin/dashboard/stats")
+async def get_admin_dashboard_stats(current_admin = Depends(get_current_admin)):
+    """Get dashboard stats for admin panel"""
+    try:
+        stats = await crud.get_dashboard_stats(database)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/admin/products/bulk", response_model=List[schemas.CoffeeProduct])
-async def create_bulk_products_admin(
-    products: List[schemas.CoffeeProductCreate],
-    current_admin = Depends(get_current_admin)
-):
-    """Create multiple products at once (Admin only)"""
-    created_products = []
-    for product in products:
-        db_product = await crud.create_product(database, product=product)
-        created_products.append(db_product)
-    return created_products
-
-# ========== ORDER MANAGEMENT (Admin Only) ==========
 @app.get("/api/v1/admin/orders/", response_model=List[schemas.Order])
-async def read_all_orders_admin(
+async def get_admin_orders(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
@@ -442,93 +456,6 @@ async def read_all_orders_admin(
         return orders[skip:skip+limit]
     
     return await crud.get_orders(database, skip=skip, limit=limit)
-
-@app.patch("/api/v1/admin/orders/{order_number}/status")
-async def update_order_status_admin(
-    order_number: str,
-    status_update: schemas.OrderStatusUpdate,
-    current_admin = Depends(get_current_admin)
-):
-    """Update order status (Admin only)"""
-    try:
-        db_order = await crud.get_order_by_number(database, order_number=order_number)
-        if not db_order:
-            raise HTTPException(status_code=404, detail="Order not found")
-        
-        order_update = schemas.OrderUpdate(status=status_update.status)
-        updated_order = await crud.update_order(database, db_order["id"], order_update)
-        
-        if not updated_order:
-            raise HTTPException(status_code=500, detail="Failed to update order")
-        
-        return updated_order
-        
-    except Exception as e:
-        print(f"❌ Error updating order status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/admin/orders/stats/dashboard")
-async def get_order_dashboard_stats_admin(current_admin = Depends(get_current_admin)):
-    """Get order statistics for admin dashboard"""
-    try:
-        stats = await crud.get_dashboard_stats(database)
-        return stats
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== SUPER ADMIN ENDPOINTS ==========
-@app.get("/api/v1/admin/admins/", response_model=List[schemas.AdminResponse])
-async def get_all_admins_admin(current_admin = Depends(get_current_super_admin)):
-    """Get all admin users (Super Admin only)"""
-    try:
-        admins = await crud.get_admin_users(database)
-        return admins
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/admin/admins/", response_model=schemas.AdminResponse)
-async def create_admin_admin(
-    admin_data: schemas.AdminCreate,
-    current_admin = Depends(get_current_super_admin)
-):
-    """Create new admin user (Super Admin only)"""
-    try:
-        new_admin = await crud.create_admin_user(database, admin_data)
-        if not new_admin:
-            raise HTTPException(status_code=500, detail="Failed to create admin")
-        return new_admin
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== PAYMENT MANAGEMENT ==========
-@app.post("/api/v1/payments/{order_number}/simulate-paid")
-async def simulate_payment_paid(order_number: str):
-    """Endpoint to simulate payment for testing"""
-    try:
-        db_order = await crud.update_order_payment_status(database, order_number, "paid", "simulated_md5")
-        if db_order:
-            if order_number in active_payment_checks:
-                active_payment_checks[order_number]['status'] = 'paid'
-            
-            return {
-                "message": "Payment simulated successfully",
-                "order_number": order_number,
-                "status": "paid"
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Order not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to simulate payment: {str(e)}")
-
-@app.get("/api/v1/payments/active")
-async def get_active_payments():
-    """Get all active payment checks"""
-    return {
-        "active_payments": active_payment_checks,
-        "total_active": len(active_payment_checks)
-    }
 
 # ========== ROOT ENDPOINTS ==========
 @app.get("/")
@@ -543,7 +470,10 @@ async def read_root():
             "cart": "/api/v1/cart/",
             "orders": "/api/v1/orders/",
             "khqr": "/api/v1/khqr/generate",
-            "auth_login": "/api/v1/auth/login"
+            "auth_login": "/api/v1/auth/login",
+            "admin_login": "/api/v1/admin/login",
+            "admin_me": "/api/v1/admin/me",
+            "admin_dashboard": "/api/v1/admin/dashboard/stats"
         }
     }
 
@@ -561,6 +491,94 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "endpoints_available": True
     }
+
+# Test endpoint to verify admin credentials
+@app.get("/test-admin")
+async def test_admin():
+    """Test endpoint to check admin credentials"""
+    try:
+        # Test the default admin credentials
+        test_email = "admin@gmail.com"
+        test_password = "11112222"
+        
+        print(f"🔐 Testing admin credentials for: {test_email}")
+        
+        # Manually check the hash
+        expected_hash = hashlib.sha256(f"{test_password}{SALT}".encode()).hexdigest()
+        print(f"🔑 Expected hash: {expected_hash[:50]}...")
+        
+        # Check database
+        query = "SELECT email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
+        admin = await database.fetch_one(query, {"email": test_email})
+        
+        if not admin:
+            return {
+                "success": False,
+                "message": "Admin not found in database",
+                "email": test_email
+            }
+        
+        db_hash = admin["hashed_password"]
+        hash_len = admin["hash_len"]
+        
+        return {
+            "success": True,
+            "email": test_email,
+            "db_hash_length": hash_len,
+            "db_hash_sample": db_hash[:50] + "..." if db_hash else "None",
+            "expected_hash_sample": expected_hash[:50] + "...",
+            "hashes_match": db_hash == expected_hash
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# Debug endpoint to reset admin
+@app.get("/reset-admin")
+async def reset_admin_endpoint():
+    """Endpoint to reset admin password (for debugging)"""
+    try:
+        # Delete existing admin
+        await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
+        
+        # Create new admin with SHA256
+        password = "11112222"
+        hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+        
+        insert_query = """
+        INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+        VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+        """
+        
+        await database.execute(
+            query=insert_query,
+            values={
+                "email": "admin@gmail.com",
+                "hashed_password": hashed_password,
+                "full_name": "System Administrator",
+                "role": "super_admin",
+                "is_active": True,
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        return {
+            "success": True,
+            "message": "Admin reset successfully",
+            "email": "admin@gmail.com",
+            "password": "11112222",
+            "hash_length": len(hashed_password),
+            "hash_sample": hashed_password[:50] + "..."
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 # Global exception handler
 @app.exception_handler(Exception)
