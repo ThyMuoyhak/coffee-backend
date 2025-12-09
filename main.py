@@ -48,7 +48,7 @@ app.add_middleware(
         "https://frontend-coffee-backendg2.vercel.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "*"  # Allow all for testing
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -126,11 +126,11 @@ async def create_sample_data():
     """Create sample data and ensure default admin exists"""
     print("\n🔄 Setting up sample data...")
     
-    # Create default admin
+    # Create default admin with DEBUGGING
     print("👤 Checking/creating default admin...")
     
     try:
-        check_query = "SELECT email, hashed_password FROM admin_users WHERE email = 'admin@gmail.com'"
+        check_query = "SELECT id, email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = 'admin@gmail.com'"
         existing_admin = await database.fetch_one(check_query)
         
         if not existing_admin:
@@ -139,7 +139,8 @@ async def create_sample_data():
             password = "11112222"
             hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
             
-            print(f"🔑 Generated hash: {hashed_password[:50]}...")
+            print(f"🔑 Generated hash length: {len(hashed_password)}")
+            print(f"🔑 Hash sample: {hashed_password[:50]}...")
             
             insert_query = """
             INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
@@ -161,9 +162,45 @@ async def create_sample_data():
             print("✅ Default admin created successfully!")
             print(f"   Email: admin@gmail.com")
             print(f"   Password: 11112222")
+            print(f"   Hash length: {len(hashed_password)}")
         else:
-            print(f"✅ Admin already exists")
-            print(f"   Hash stored: {existing_admin['hashed_password'][:50]}...")
+            print(f"✅ Admin already exists in database")
+            print(f"   Admin ID: {existing_admin['id']}")
+            print(f"   Email: {existing_admin['email']}")
+            print(f"   Stored hash length: {existing_admin['hash_len']}")
+            print(f"   Hash sample: {existing_admin['hashed_password'][:50]}...")
+            
+            # Verify the hash matches expected
+            password = "11112222"
+            expected_hash = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+            print(f"   Expected hash length: {len(expected_hash)}")
+            print(f"   Expected hash sample: {expected_hash[:50]}...")
+            
+            if existing_admin['hashed_password'] != expected_hash:
+                print("⚠️ WARNING: Stored hash doesn't match expected hash!")
+                print("   Deleting and recreating admin...")
+                
+                # Delete and recreate
+                delete_query = "DELETE FROM admin_users WHERE email = 'admin@gmail.com'"
+                await database.execute(delete_query)
+                
+                insert_query = """
+                INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+                VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+                """
+                
+                await database.execute(
+                    query=insert_query,
+                    values={
+                        "email": "admin@gmail.com",
+                        "hashed_password": expected_hash,
+                        "full_name": "System Administrator",
+                        "role": "super_admin",
+                        "is_active": True,
+                        "created_at": datetime.utcnow()
+                    }
+                )
+                print("✅ Admin recreated with correct hash!")
             
     except Exception as e:
         print(f"❌ Error creating admin: {e}")
@@ -191,87 +228,127 @@ async def check_payment_status_demo(order_number: str):
 
 # ========== FIXED AUTHENTICATION ENDPOINTS ==========
 
-# Endpoint 1: /api/v1/admin/login (for admin panel)
+# Simple login function for debugging
+def verify_admin_password(email: str, password: str) -> bool:
+    """Direct password verification for debugging"""
+    expected_hash = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+    
+    # Check database directly
+    import asyncio
+    async def check_db():
+        query = "SELECT hashed_password FROM admin_users WHERE email = :email"
+        result = await database.fetch_one(query, {"email": email})
+        if result:
+            db_hash = result["hashed_password"]
+            print(f"🔑 DB Hash: {db_hash[:50]}...")
+            print(f"🔑 Expected: {expected_hash[:50]}...")
+            print(f"🔑 Match: {db_hash == expected_hash}")
+            return db_hash == expected_hash
+        return False
+    
+    return asyncio.run(check_db())
+
+# Endpoint for admin panel login
 @app.post("/api/v1/admin/login", response_model=schemas.Token)
 async def admin_login_admin_panel(login_data: schemas.AdminLogin):
     """Admin login endpoint for admin panel"""
     try:
-        print(f"🔐 Admin panel login attempt for: {login_data.email}")
+        print(f"🔐 ADMIN LOGIN ATTEMPT:")
+        print(f"   Email: {login_data.email}")
+        print(f"   Password: {login_data.password}")
+        print(f"   Password length: {len(login_data.password)}")
         
-        admin = await crud.authenticate_admin(database, login_data.email, login_data.password)
+        # First check if admin exists
+        check_query = "SELECT id, email, hashed_password, role, is_active FROM admin_users WHERE email = :email"
+        admin_record = await database.fetch_one(check_query, {"email": login_data.email})
         
-        if not admin:
-            print(f"❌ Authentication failed for: {login_data.email}")
+        if not admin_record:
+            print(f"❌ Admin not found in database: {login_data.email}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        print(f"✅ Admin authenticated: {admin['email']}")
+        print(f"✅ Admin found in database:")
+        print(f"   ID: {admin_record['id']}")
+        print(f"   Email: {admin_record['email']}")
+        print(f"   Role: {admin_record['role']}")
+        print(f"   Is Active: {admin_record['is_active']}")
+        print(f"   Stored hash length: {len(admin_record['hashed_password'])}")
+        print(f"   Stored hash sample: {admin_record['hashed_password'][:50]}...")
         
-        await crud.update_admin_last_login(database, admin["id"])
+        # Check if admin is active
+        if not admin_record['is_active']:
+            print(f"❌ Admin account is disabled")
+            raise HTTPException(status_code=403, detail="Admin account is disabled")
         
+        # Calculate expected hash
+        expected_hash = hashlib.sha256(f"{login_data.password}{SALT}".encode()).hexdigest()
+        print(f"🔑 Calculated expected hash:")
+        print(f"   Length: {len(expected_hash)}")
+        print(f"   Sample: {expected_hash[:50]}...")
+        
+        # Verify password
+        if admin_record['hashed_password'] != expected_hash:
+            print(f"❌ Password verification FAILED!")
+            print(f"   Stored: {admin_record['hashed_password'][:50]}...")
+            print(f"   Expected: {expected_hash[:50]}...")
+            
+            # Try common mistakes
+            common_mistakes = [
+                login_data.password,  # Original
+                login_data.password.strip(),  # Trimmed
+                "11112222",  # Default
+                "11112222".strip(),
+            ]
+            
+            for i, pwd in enumerate(common_mistakes):
+                test_hash = hashlib.sha256(f"{pwd}{SALT}".encode()).hexdigest()
+                if admin_record['hashed_password'] == test_hash:
+                    print(f"⚠️ Found matching password: Attempt {i+1}")
+            
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        print(f"✅ Password verification SUCCESS!")
+        
+        # Update last login
+        update_query = "UPDATE admin_users SET last_login = :last_login WHERE id = :id"
+        await database.execute(
+            update_query,
+            {"last_login": datetime.utcnow(), "id": admin_record["id"]}
+        )
+        
+        # Create access token
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": admin["email"], "role": admin["role"]},
+            data={"sub": admin_record["email"], "role": admin_record["role"]},
             expires_delta=access_token_expires
         )
+        
+        print(f"✅ Login successful for: {admin_record['email']}")
+        print(f"   Token created successfully")
         
         return {
             "access_token": access_token,
             "token_type": "bearer",
             "admin": {
-                "id": admin["id"],
-                "email": admin["email"],
-                "full_name": admin["full_name"],
-                "role": admin["role"]
+                "id": admin_record["id"],
+                "email": admin_record["email"],
+                "full_name": admin_record.get("full_name", "Administrator"),
+                "role": admin_record["role"]
             }
         }
         
     except HTTPException as e:
-        print(f"❌ HTTP Exception during login: {e.detail}")
+        print(f"❌ HTTP Exception: {e.detail}")
         raise e
     except Exception as e:
-        print(f"❌ Login error: {str(e)}")
+        print(f"❌ Unexpected error: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
-# Endpoint 2: /api/v1/auth/login (original endpoint)
+# Original auth login endpoint
 @app.post("/api/v1/auth/login", response_model=schemas.Token)
 async def admin_login(login_data: schemas.AdminLogin):
     """Admin login endpoint (original)"""
-    try:
-        print(f"🔐 Auth login attempt for: {login_data.email}")
-        
-        admin = await crud.authenticate_admin(database, login_data.email, login_data.password)
-        
-        if not admin:
-            print(f"❌ Authentication failed for: {login_data.email}")
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        
-        print(f"✅ Admin authenticated: {admin['email']}")
-        
-        await crud.update_admin_last_login(database, admin["id"])
-        
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": admin["email"], "role": admin["role"]},
-            expires_delta=access_token_expires
-        )
-        
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "admin": {
-                "id": admin["id"],
-                "email": admin["email"],
-                "full_name": admin["full_name"],
-                "role": admin["role"]
-            }
-        }
-        
-    except HTTPException as e:
-        print(f"❌ HTTP Exception during login: {e.detail}")
-        raise e
-    except Exception as e:
-        print(f"❌ Login error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+    return await admin_login_admin_panel(login_data)
 
 @app.get("/api/v1/auth/me", response_model=schemas.AdminUser)
 async def get_current_admin_info(current_admin = Depends(get_current_admin)):
@@ -308,10 +385,6 @@ async def read_product(product_id: int):
         raise HTTPException(status_code=404, detail="Product not found")
     return db_product
 
-@app.post("/api/v1/products/", response_model=schemas.CoffeeProduct)
-async def create_product(product: schemas.CoffeeProductCreate):
-    return await crud.create_product(database, product=product)
-
 @app.get("/api/v1/categories/")
 async def get_categories():
     products = await crud.get_products(database)
@@ -324,109 +397,6 @@ async def get_products_by_category(category: str):
     products = await crud.get_products(database)
     filtered_products = [product for product in products if product.get("category") == category]
     return filtered_products
-
-# ========== CART ENDPOINTS ==========
-@app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
-async def read_cart_items(skip: int = 0, limit: int = 100):
-    return await crud.get_cart_items(database, skip=skip, limit=limit)
-
-@app.post("/api/v1/cart/", response_model=schemas.CartItem)
-async def add_to_cart(cart_item: schemas.CartItemCreate):
-    return await crud.create_cart_item(database, cart_item=cart_item)
-
-@app.delete("/api/v1/cart/{cart_item_id}")
-async def remove_from_cart(cart_item_id: int):
-    success = await crud.delete_cart_item(database, cart_item_id=cart_item_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Cart item not found")
-    return {"message": "Item removed from cart"}
-
-@app.delete("/api/v1/cart/")
-async def clear_cart():
-    success = await crud.clear_cart(database)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to clear cart")
-    return {"message": "Cart cleared successfully"}
-
-# ========== PUBLIC ORDERS ENDPOINTS ==========
-@app.get("/api/v1/orders/", response_model=List[schemas.Order])
-async def read_orders(skip: int = 0, limit: int = 100):
-    return await crud.get_orders(database, skip=skip, limit=limit)
-
-@app.post("/api/v1/orders/", response_model=schemas.Order)
-async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundTasks):
-    try:
-        print(f"📦 Creating order for: {order.customer_name}")
-        
-        db_order = await crud.create_order(database, order=order)
-        
-        if not db_order:
-            raise HTTPException(status_code=500, detail="Failed to create order")
-        
-        print(f"✅ Order created: {db_order.get('order_number')}")
-        
-        background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
-        
-        return db_order
-    except Exception as e:
-        print(f"❌ Error creating order: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
-
-@app.get("/api/v1/orders/{order_number}", response_model=schemas.Order)
-async def read_order(order_number: str):
-    db_order = await crud.get_order_by_number(database, order_number=order_number)
-    if db_order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return db_order
-
-# ========== KHQR PAYMENT ENDPOINTS ==========
-@app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
-async def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks):
-    """Generate demo KHQR for deployment"""
-    print(f"🔄 Generating DEMO KHQR for order: {khqr_request.order_number}")
-    
-    demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
-    
-    background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
-    
-    return schemas.KHQRResponse(
-        qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
-        md5_hash=demo_md5,
-        deeplink=f"https://example.com/demo/{khqr_request.order_number}",
-        qr_image=None
-    )
-
-@app.get("/api/v1/khqr/status/{order_number}", response_model=schemas.PaymentStatusResponse)
-async def get_payment_status(order_number: str):
-    try:
-        db_order = await crud.get_order_by_number(database, order_number=order_number)
-        if db_order is None:
-            raise HTTPException(status_code=404, detail="Order not found")
-        
-        current_status = db_order.get('payment_status', 'pending')
-        
-        active_check = active_payment_checks.get(order_number)
-        if active_check:
-            current_status = active_check['status']
-        
-        transaction_data = {
-            "order_number": order_number,
-            "amount": db_order.get('total_amount', 0),
-            "currency": db_order.get('currency', 'USD'),
-            "timestamp": datetime.now().isoformat(),
-            "demo": True,
-            "mode": "demo"
-        }
-        
-        return schemas.PaymentStatusResponse(
-            order_number=order_number,
-            payment_status=current_status,
-            transaction_data=transaction_data
-        )
-        
-    except Exception as e:
-        print(f"❌ Payment status check failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Payment status check failed: {str(e)}")
 
 # ========== ADMIN MANAGEMENT ENDPOINTS ==========
 @app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
@@ -467,13 +437,9 @@ async def read_root():
         "endpoints": {
             "health": "/health",
             "products": "/api/v1/products/",
-            "cart": "/api/v1/cart/",
-            "orders": "/api/v1/orders/",
-            "khqr": "/api/v1/khqr/generate",
-            "auth_login": "/api/v1/auth/login",
             "admin_login": "/api/v1/admin/login",
-            "admin_me": "/api/v1/admin/me",
-            "admin_dashboard": "/api/v1/admin/dashboard/stats"
+            "test_admin": "/test-admin",
+            "reset_admin": "/reset-admin"
         }
     }
 
@@ -492,42 +458,64 @@ async def health_check():
         "endpoints_available": True
     }
 
-# Test endpoint to verify admin credentials
+# Debug endpoint to check admin
 @app.get("/test-admin")
 async def test_admin():
     """Test endpoint to check admin credentials"""
     try:
-        # Test the default admin credentials
         test_email = "admin@gmail.com"
         test_password = "11112222"
         
         print(f"🔐 Testing admin credentials for: {test_email}")
         
-        # Manually check the hash
-        expected_hash = hashlib.sha256(f"{test_password}{SALT}".encode()).hexdigest()
-        print(f"🔑 Expected hash: {expected_hash[:50]}...")
-        
-        # Check database
-        query = "SELECT email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
+        # Check if admin exists
+        query = "SELECT id, email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
         admin = await database.fetch_one(query, {"email": test_email})
         
         if not admin:
             return {
                 "success": False,
                 "message": "Admin not found in database",
-                "email": test_email
+                "email": test_email,
+                "action": "Try /reset-admin to create admin"
             }
         
         db_hash = admin["hashed_password"]
         hash_len = admin["hash_len"]
         
+        # Calculate expected hash
+        expected_hash = hashlib.sha256(f"{test_password}{SALT}".encode()).hexdigest()
+        
+        # Try different password variations
+        test_variations = [
+            ("Original", test_password),
+            ("Trimmed", test_password.strip()),
+            ("Default", "11112222"),
+            ("Default trimmed", "11112222".strip()),
+        ]
+        
+        variations_result = []
+        for name, pwd in test_variations:
+            test_hash = hashlib.sha256(f"{pwd}{SALT}".encode()).hexdigest()
+            variations_result.append({
+                "name": name,
+                "password": pwd,
+                "matches": db_hash == test_hash,
+                "hash_sample": test_hash[:20] + "..."
+            })
+        
         return {
             "success": True,
+            "admin_exists": True,
+            "admin_id": admin["id"],
             "email": test_email,
             "db_hash_length": hash_len,
             "db_hash_sample": db_hash[:50] + "..." if db_hash else "None",
             "expected_hash_sample": expected_hash[:50] + "...",
-            "hashes_match": db_hash == expected_hash
+            "hashes_match": db_hash == expected_hash,
+            "password_variations": variations_result,
+            "salt_used": SALT,
+            "action": "If hashes don't match, use /reset-admin"
         }
         
     except Exception as e:
@@ -542,7 +530,8 @@ async def reset_admin_endpoint():
     """Endpoint to reset admin password (for debugging)"""
     try:
         # Delete existing admin
-        await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
+        delete_count = await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
+        print(f"🧹 Deleted {delete_count} admin users")
         
         # Create new admin with SHA256
         password = "11112222"
@@ -553,7 +542,7 @@ async def reset_admin_endpoint():
         VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
         """
         
-        await database.execute(
+        admin_id = await database.execute(
             query=insert_query,
             values={
                 "email": "admin@gmail.com",
@@ -568,10 +557,13 @@ async def reset_admin_endpoint():
         return {
             "success": True,
             "message": "Admin reset successfully",
+            "admin_id": admin_id,
             "email": "admin@gmail.com",
             "password": "11112222",
             "hash_length": len(hashed_password),
-            "hash_sample": hashed_password[:50] + "..."
+            "hash_sample": hashed_password[:50] + "...",
+            "login_endpoint": "/api/v1/admin/login",
+            "test_endpoint": "/test-admin"
         }
         
     except Exception as e:
