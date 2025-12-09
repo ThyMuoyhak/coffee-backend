@@ -89,11 +89,18 @@ async def get_current_admin(credentials: HTTPAuthorizationCredentials = Security
         if email is None:
             raise HTTPException(status_code=401, detail="Invalid authentication credentials")
         
-        admin = await crud.get_admin_by_email(database, email)
-        if admin is None:
+        # Get admin and convert to dict
+        query = "SELECT * FROM admin_users WHERE email = :email"
+        admin_record = await database.fetch_one(query, {"email": email})
+        if admin_record is None:
             raise HTTPException(status_code=401, detail="Admin not found")
         
-        if not admin.get("is_active", True):
+        admin = dict(admin_record)
+        
+        # Convert is_active to boolean
+        admin["is_active"] = bool(admin.get("is_active", 1))
+        
+        if not admin["is_active"]:
             raise HTTPException(status_code=403, detail="Admin account is disabled")
         
         return admin
@@ -102,6 +109,7 @@ async def get_current_admin(credentials: HTTPAuthorizationCredentials = Security
     except jwt.JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     except Exception as e:
+        print(f"❌ Token error: {str(e)}")
         raise HTTPException(status_code=401, detail=str(e))
 
 async def get_current_super_admin(current_admin = Depends(get_current_admin)):
@@ -154,7 +162,7 @@ async def create_sample_data():
                     "hashed_password": hashed_password,
                     "full_name": "System Administrator",
                     "role": "super_admin",
-                    "is_active": True,
+                    "is_active": 1,  # SQLite uses 1 for True
                     "created_at": datetime.utcnow()
                 }
             )
@@ -196,7 +204,7 @@ async def create_sample_data():
                         "hashed_password": expected_hash,
                         "full_name": "System Administrator",
                         "role": "super_admin",
-                        "is_active": True,
+                        "is_active": 1,
                         "created_at": datetime.utcnow()
                     }
                 )
@@ -226,123 +234,63 @@ async def check_payment_status_demo(order_number: str):
         active_payment_checks[order_number]['status'] = 'failed'
         print(f"❌ Failed to update payment status for order {order_number}")
 
-# ========== FIXED AUTHENTICATION ENDPOINTS ==========
-
-# Simple login function for debugging
-def verify_admin_password(email: str, password: str) -> bool:
-    """Direct password verification for debugging"""
-    expected_hash = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
-    
-    # Check database directly
-    import asyncio
-    async def check_db():
-        query = "SELECT hashed_password FROM admin_users WHERE email = :email"
-        result = await database.fetch_one(query, {"email": email})
-        if result:
-            db_hash = result["hashed_password"]
-            print(f"🔑 DB Hash: {db_hash[:50]}...")
-            print(f"🔑 Expected: {expected_hash[:50]}...")
-            print(f"🔑 Match: {db_hash == expected_hash}")
-            return db_hash == expected_hash
-        return False
-    
-    return asyncio.run(check_db())
+# ========== AUTHENTICATION ENDPOINTS ==========
 
 # Endpoint for admin panel login
 @app.post("/api/v1/admin/login", response_model=schemas.Token)
 async def admin_login_admin_panel(login_data: schemas.AdminLogin):
     """Admin login endpoint for admin panel"""
     try:
-        print(f"🔐 ADMIN LOGIN ATTEMPT:")
-        print(f"   Email: {login_data.email}")
-        print(f"   Password: {login_data.password}")
-        print(f"   Password length: {len(login_data.password)}")
+        print(f"🔐 ADMIN LOGIN ATTEMPT for: {login_data.email}")
         
-        # First check if admin exists
-        check_query = "SELECT id, email, hashed_password, role, is_active FROM admin_users WHERE email = :email"
-        admin_record = await database.fetch_one(check_query, {"email": login_data.email})
+        # Direct database query
+        query = "SELECT id, email, hashed_password, role, is_active, full_name FROM admin_users WHERE email = :email"
+        admin_record = await database.fetch_one(query, {"email": login_data.email})
         
         if not admin_record:
-            print(f"❌ Admin not found in database: {login_data.email}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        print(f"✅ Admin found in database:")
-        print(f"   ID: {admin_record['id']}")
-        print(f"   Email: {admin_record['email']}")
-        print(f"   Role: {admin_record['role']}")
-        print(f"   Is Active: {admin_record['is_active']}")
-        print(f"   Stored hash length: {len(admin_record['hashed_password'])}")
-        print(f"   Stored hash sample: {admin_record['hashed_password'][:50]}...")
-        
-        # Check if admin is active
-        if not admin_record['is_active']:
-            print(f"❌ Admin account is disabled")
-            raise HTTPException(status_code=403, detail="Admin account is disabled")
-        
-        # Calculate expected hash
-        expected_hash = hashlib.sha256(f"{login_data.password}{SALT}".encode()).hexdigest()
-        print(f"🔑 Calculated expected hash:")
-        print(f"   Length: {len(expected_hash)}")
-        print(f"   Sample: {expected_hash[:50]}...")
+        # Convert to dict
+        admin = dict(admin_record)
         
         # Verify password
-        if admin_record['hashed_password'] != expected_hash:
-            print(f"❌ Password verification FAILED!")
-            print(f"   Stored: {admin_record['hashed_password'][:50]}...")
-            print(f"   Expected: {expected_hash[:50]}...")
-            
-            # Try common mistakes
-            common_mistakes = [
-                login_data.password,  # Original
-                login_data.password.strip(),  # Trimmed
-                "11112222",  # Default
-                "11112222".strip(),
-            ]
-            
-            for i, pwd in enumerate(common_mistakes):
-                test_hash = hashlib.sha256(f"{pwd}{SALT}".encode()).hexdigest()
-                if admin_record['hashed_password'] == test_hash:
-                    print(f"⚠️ Found matching password: Attempt {i+1}")
-            
+        expected_hash = hashlib.sha256(f"{login_data.password}{SALT}".encode()).hexdigest()
+        
+        if admin["hashed_password"] != expected_hash:
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        print(f"✅ Password verification SUCCESS!")
+        # Check if admin is active
+        if not bool(admin.get("is_active", 1)):
+            raise HTTPException(status_code=403, detail="Admin account is disabled")
         
         # Update last login
-        update_query = "UPDATE admin_users SET last_login = :last_login WHERE id = :id"
         await database.execute(
-            update_query,
-            {"last_login": datetime.utcnow(), "id": admin_record["id"]}
+            "UPDATE admin_users SET last_login = :now WHERE id = :id",
+            {"now": datetime.utcnow(), "id": admin["id"]}
         )
         
-        # Create access token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        # Create token
         access_token = create_access_token(
-            data={"sub": admin_record["email"], "role": admin_record["role"]},
-            expires_delta=access_token_expires
+            data={"sub": admin["email"], "role": admin["role"]}
         )
-        
-        print(f"✅ Login successful for: {admin_record['email']}")
-        print(f"   Token created successfully")
         
         return {
             "access_token": access_token,
             "token_type": "bearer",
             "admin": {
-                "id": admin_record["id"],
-                "email": admin_record["email"],
-                "full_name": admin_record.get("full_name", "Administrator"),
-                "role": admin_record["role"]
+                "id": admin["id"],
+                "email": admin["email"],
+                "full_name": admin.get("full_name", "Administrator"),
+                "role": admin["role"],
+                "is_active": bool(admin.get("is_active", 1))
             }
         }
         
     except HTTPException as e:
-        print(f"❌ HTTP Exception: {e.detail}")
         raise e
     except Exception as e:
-        print(f"❌ Unexpected error: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+        print(f"Login error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Login failed")
 
 # Original auth login endpoint
 @app.post("/api/v1/auth/login", response_model=schemas.Token)
@@ -397,6 +345,109 @@ async def get_products_by_category(category: str):
     products = await crud.get_products(database)
     filtered_products = [product for product in products if product.get("category") == category]
     return filtered_products
+
+# ========== CART ENDPOINTS ==========
+@app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
+async def read_cart_items(skip: int = 0, limit: int = 100):
+    return await crud.get_cart_items(database, skip=skip, limit=limit)
+
+@app.post("/api/v1/cart/", response_model=schemas.CartItem)
+async def add_to_cart(cart_item: schemas.CartItemCreate):
+    return await crud.create_cart_item(database, cart_item=cart_item)
+
+@app.delete("/api/v1/cart/{cart_item_id}")
+async def remove_from_cart(cart_item_id: int):
+    success = await crud.delete_cart_item(database, cart_item_id=cart_item_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Cart item not found")
+    return {"message": "Item removed from cart"}
+
+@app.delete("/api/v1/cart/")
+async def clear_cart():
+    success = await crud.clear_cart(database)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to clear cart")
+    return {"message": "Cart cleared successfully"}
+
+# ========== PUBLIC ORDERS ENDPOINTS ==========
+@app.get("/api/v1/orders/", response_model=List[schemas.Order])
+async def read_orders(skip: int = 0, limit: int = 100):
+    return await crud.get_orders(database, skip=skip, limit=limit)
+
+@app.post("/api/v1/orders/", response_model=schemas.Order)
+async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundTasks):
+    try:
+        print(f"📦 Creating order for: {order.customer_name}")
+        
+        db_order = await crud.create_order(database, order=order)
+        
+        if not db_order:
+            raise HTTPException(status_code=500, detail="Failed to create order")
+        
+        print(f"✅ Order created: {db_order.get('order_number')}")
+        
+        background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
+        
+        return db_order
+    except Exception as e:
+        print(f"❌ Error creating order: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+
+@app.get("/api/v1/orders/{order_number}", response_model=schemas.Order)
+async def read_order(order_number: str):
+    db_order = await crud.get_order_by_number(database, order_number=order_number)
+    if db_order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return db_order
+
+# ========== KHQR PAYMENT ENDPOINTS ==========
+@app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
+async def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks):
+    """Generate demo KHQR for deployment"""
+    print(f"🔄 Generating DEMO KHQR for order: {khqr_request.order_number}")
+    
+    demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
+    
+    background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
+    
+    return schemas.KHQRResponse(
+        qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
+        md5_hash=demo_md5,
+        deeplink=f"https://example.com/demo/{khqr_request.order_number}",
+        qr_image=None
+    )
+
+@app.get("/api/v1/khqr/status/{order_number}", response_model=schemas.PaymentStatusResponse)
+async def get_payment_status(order_number: str):
+    try:
+        db_order = await crud.get_order_by_number(database, order_number=order_number)
+        if db_order is None:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        current_status = db_order.get('payment_status', 'pending')
+        
+        active_check = active_payment_checks.get(order_number)
+        if active_check:
+            current_status = active_check['status']
+        
+        transaction_data = {
+            "order_number": order_number,
+            "amount": db_order.get('total_amount', 0),
+            "currency": db_order.get('currency', 'USD'),
+            "timestamp": datetime.now().isoformat(),
+            "demo": True,
+            "mode": "demo"
+        }
+        
+        return schemas.PaymentStatusResponse(
+            order_number=order_number,
+            payment_status=current_status,
+            transaction_data=transaction_data
+        )
+        
+    except Exception as e:
+        print(f"❌ Payment status check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Payment status check failed: {str(e)}")
 
 # ========== ADMIN MANAGEMENT ENDPOINTS ==========
 @app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
@@ -470,9 +521,9 @@ async def test_admin():
         
         # Check if admin exists
         query = "SELECT id, email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
-        admin = await database.fetch_one(query, {"email": test_email})
+        admin_record = await database.fetch_one(query, {"email": test_email})
         
-        if not admin:
+        if not admin_record:
             return {
                 "success": False,
                 "message": "Admin not found in database",
@@ -480,6 +531,7 @@ async def test_admin():
                 "action": "Try /reset-admin to create admin"
             }
         
+        admin = dict(admin_record)
         db_hash = admin["hashed_password"]
         hash_len = admin["hash_len"]
         
@@ -549,7 +601,7 @@ async def reset_admin_endpoint():
                 "hashed_password": hashed_password,
                 "full_name": "System Administrator",
                 "role": "super_admin",
-                "is_active": True,
+                "is_active": 1,
                 "created_at": datetime.utcnow()
             }
         )
