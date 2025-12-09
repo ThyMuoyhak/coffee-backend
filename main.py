@@ -21,7 +21,7 @@ import jwt
 import hashlib
 
 # Environment variable to control docs
-SHOW_DOCS = os.getenv("SHOW_DOCS", "true").lower() == "true"
+SHOW_DOCS = os.getenv("SHOW_DOCS", "false").lower() == "true"
 
 if SHOW_DOCS:
     app = FastAPI(
