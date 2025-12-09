@@ -5,29 +5,26 @@ from models import CoffeeProduct, CartItem, Order, AdminUser
 import schemas
 import uuid
 from datetime import datetime, date, timedelta
-from passlib.context import CryptContext
-from jose import JWTError, jwt
 from fastapi import HTTPException, status
 from typing import Optional, List
 import hashlib
+import jwt
 
 # ========== PASSWORD HASHING ==========
-# Use SHA256 instead of bcrypt to avoid version issues
+SALT = "brewhaven-coffee-shop-salt"
+
 def get_password_hash(password: str) -> str:
     """Hash password using SHA256"""
-    # Add a salt and hash
-    salt = "brewhaven-coffee-shop-salt"
-    return hashlib.sha256(f"{password}{salt}".encode()).hexdigest()
+    return hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify password by hashing and comparing"""
-    # Hash the plain password and compare
     return get_password_hash(plain_password) == hashed_password
 
 # Secret key for JWT
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -47,46 +44,31 @@ async def get_admin_by_email(db: Database, email: str) -> Optional[dict]:
 async def authenticate_admin(db: Database, email: str, password: str) -> Optional[dict]:
     """Authenticate admin user"""
     try:
-        print(f"🔐 Authenticating admin: {email}")
-        
         admin = await get_admin_by_email(db, email)
         if not admin:
-            print(f"❌ Admin not found: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
             )
         
-        # Check if admin is active
         if not admin.get("is_active", True):
-            print(f"❌ Admin inactive: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Admin account is inactive"
             )
         
-        # Verify password
         hashed_password = admin.get('hashed_password', '')
         if not hashed_password:
-            print(f"❌ No password hash for admin: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid admin credentials"
             )
         
-        print(f"🔑 Verifying password for: {email}")
-        print(f"   Input password length: {len(password)}")
-        print(f"   Stored hash length: {len(hashed_password)}")
-        
-        # Use our simple verification
         if verify_password(password, hashed_password):
-            print(f"✅ Password verified for: {email}")
-            # Remove password before returning
             admin_dict = dict(admin)
             admin_dict.pop('hashed_password', None)
             return admin_dict
         else:
-            print(f"❌ Password verification failed for: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
@@ -95,26 +77,19 @@ async def authenticate_admin(db: Database, email: str, password: str) -> Optiona
     except HTTPException:
         raise
     except Exception as e:
-        print(f"🔥 Authentication error for {email}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication error"
+            detail=f"Authentication error: {str(e)}"
         )
 
-async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dict:
+async def create_admin_user(db: Database, admin: schemas.AdminCreate) -> dict:
     """Create admin user"""
-    # Check if admin already exists
     existing_admin = await get_admin_by_email(db, admin.email)
     if existing_admin:
         raise HTTPException(status_code=400, detail="Admin with this email already exists")
     
     try:
-        # Hash the password
         hashed_password = get_password_hash(admin.password)
-        print(f"✅ Password hashed for: {admin.email}")
-        print(f"   Hash: {hashed_password[:50]}...")
         
         query = AdminUser.__table__.insert().values(
             email=admin.email,
@@ -126,21 +101,16 @@ async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dic
         )
         admin_id = await db.execute(query)
         
-        # Fetch the created admin
         query = select(AdminUser).where(AdminUser.id == admin_id)
         result = await db.fetch_one(query)
         
         if result:
             admin_dict = dict(result)
-            # Remove password before returning
             admin_dict.pop('hashed_password', None)
             return admin_dict
         return None
         
     except Exception as e:
-        print(f"❌ Error creating admin user: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create admin user: {str(e)}"
@@ -149,7 +119,6 @@ async def create_admin_user(db: Database, admin: schemas.AdminUserCreate) -> dic
 async def get_admin_users(db: Database, skip: int = 0, limit: int = 100) -> List[dict]:
     query = select(AdminUser).offset(skip).limit(limit)
     results = await db.fetch_all(query)
-    # Remove passwords from results
     admin_list = []
     for admin in results:
         admin_dict = dict(admin)
@@ -173,7 +142,6 @@ async def update_admin_user(db: Database, admin_id: int, admin_update: schemas.A
     
     update_data = admin_update.dict(exclude_unset=True)
     
-    # Handle password update separately
     if "password" in update_data and update_data["password"]:
         update_data["hashed_password"] = get_password_hash(update_data.pop("password"))
     
@@ -258,7 +226,6 @@ async def get_orders(db: Database, skip: int = 0, limit: int = 100) -> List[dict
     orders_list = []
     for order in results:
         order_dict = dict(order)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -274,7 +241,6 @@ async def get_order_by_number(db: Database, order_number: str) -> Optional[dict]
     result = await db.fetch_one(query)
     if result:
         order_dict = dict(result)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -287,7 +253,6 @@ async def get_order_by_number(db: Database, order_number: str) -> Optional[dict]
 async def create_order(db: Database, order: schemas.OrderCreate) -> dict:
     order_number = f"BH{datetime.now().strftime('%Y%m%d')}{uuid.uuid4().hex[:8].upper()}"
     
-    # Convert to dict and add required fields
     order_data = order.dict()
     order_data['order_number'] = order_number
     order_data['status'] = 'pending'
@@ -295,20 +260,17 @@ async def create_order(db: Database, order: schemas.OrderCreate) -> dict:
     order_data['khqr_md5'] = None
     order_data['admin_notes'] = None
     
-    # Ensure notes field is present
     if not order_data.get('notes'):
         order_data['notes'] = ''
     
     query = Order.__table__.insert().values(**order_data)
     order_id = await db.execute(query)
     
-    # Fetch the created order
     query = select(Order).where(Order.id == order_id)
     result = await db.fetch_one(query)
     
     if result:
         order_dict = dict(result)
-        # Ensure all fields are properly formatted
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -335,7 +297,6 @@ async def get_order_by_id(db: Database, order_id: int) -> Optional[dict]:
     result = await db.fetch_one(query)
     if result:
         order_dict = dict(result)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -370,7 +331,6 @@ async def search_orders(db: Database, query_str: str) -> List[dict]:
     orders_list = []
     for order in results:
         order_dict = dict(order)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -388,7 +348,6 @@ async def get_orders_by_status(db: Database, status: str) -> List[dict]:
     orders_list = []
     for order in results:
         order_dict = dict(order)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', status)
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -411,7 +370,6 @@ async def get_orders_by_date_range(db: Database, start_date: date, end_date: dat
     orders_list = []
     for order in results:
         order_dict = dict(order)
-        # Ensure required fields are present
         order_dict['status'] = order_dict.get('status', 'pending')
         order_dict['payment_status'] = order_dict.get('payment_status', 'pending')
         order_dict['khqr_md5'] = order_dict.get('khqr_md5')
@@ -424,37 +382,30 @@ async def get_orders_by_date_range(db: Database, start_date: date, end_date: dat
 
 # ========== DASHBOARD STATS ==========
 async def get_dashboard_stats(db: Database):
-    # Total orders
     total_orders_query = select(func.count()).select_from(Order)
     total_orders = await db.fetch_val(total_orders_query) or 0
     
-    # Total revenue
     total_revenue_query = select(func.sum(Order.total_amount))
     total_revenue_result = await db.fetch_val(total_revenue_query)
     total_revenue = float(total_revenue_result) if total_revenue_result else 0.0
     
-    # Total products
     total_products_query = select(func.count()).select_from(CoffeeProduct)
     total_products = await db.fetch_val(total_products_query) or 0
     
-    # Pending orders
     pending_orders_query = select(func.count()).select_from(Order).where(
         Order.status.in_(["pending", "preparing"])
     )
     pending_orders = await db.fetch_val(pending_orders_query) or 0
     
-    # Completed orders
     completed_orders_query = select(func.count()).select_from(Order).where(Order.status == "completed")
     completed_orders = await db.fetch_val(completed_orders_query) or 0
     
-    # Today's orders
     today = date.today()
     today_orders_query = select(func.count()).select_from(Order).where(
         func.date(Order.created_at) == today
     )
     today_orders = await db.fetch_val(today_orders_query) or 0
     
-    # Today's revenue
     today_revenue_query = select(func.sum(Order.total_amount)).where(
         func.date(Order.created_at) == today
     )
