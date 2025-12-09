@@ -27,7 +27,6 @@ class AdminBase(BaseModel):
     full_name: str
     role: str = "admin"
 
-# Both are the same, for compatibility
 class AdminUserCreate(AdminBase):
     password: str
 
@@ -183,18 +182,3 @@ class PaymentStatusResponse(BaseModel):
     order_number: str
     payment_status: str
     transaction_data: Dict[str, Any]
-
-# ========== ANALYTICS SCHEMAS ==========
-class SalesAnalytics(BaseModel):
-    period: str
-    date: Optional[str] = None
-    week: Optional[str] = None
-    month: Optional[str] = None
-    order_count: int
-    total_revenue: float
-
-class TopProduct(BaseModel):
-    name: str
-    category: str
-    sold_count: int
-    revenue: float
