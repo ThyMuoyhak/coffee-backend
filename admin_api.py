@@ -69,7 +69,7 @@ async def get_order_stats(
 # ========== ADMIN USER MANAGEMENT (Super Admin Only) ==========
 @router.post("/users/", response_model=schemas.AdminUser)
 async def create_admin_user(
-    admin: schemas.AdminUserCreate,
+    admin: schemas.AdminCreate,  # Changed from AdminUserCreate to AdminCreate
     current_admin: schemas.AdminUser = Depends(get_current_super_admin)
 ):
     return await crud.create_admin_user(database, admin)
