@@ -2,7 +2,6 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
-from decimal import Decimal
 
 # ========== AUTHENTICATION SCHEMAS ==========
 class AdminLogin(BaseModel):
@@ -27,6 +26,10 @@ class AdminBase(BaseModel):
     email: EmailStr
     full_name: str
     role: str = "admin"
+
+# Add this - it's missing and causing the error
+class AdminUserCreate(AdminBase):
+    password: str
 
 class AdminCreate(AdminBase):
     password: str
