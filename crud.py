@@ -3,6 +3,7 @@ from sqlalchemy import func, select, update, delete, and_
 from databases import Database
 from models import CoffeeProduct, CartItem, Order, AdminUser
 import schemas
+import json
 import uuid
 from datetime import datetime, date, timedelta
 from fastapi import HTTPException, status
@@ -37,9 +38,16 @@ def create_access_token(data: dict):
 
 # Admin CRUD
 async def get_admin_by_email(db: Database, email: str) -> Optional[dict]:
+    """Get admin by email and convert to dict"""
     query = select(AdminUser).where(AdminUser.email == email)
     result = await db.fetch_one(query)
-    return dict(result) if result else None
+    if result:
+        admin_dict = dict(result)
+        # Convert is_active to boolean
+        admin_dict["is_active"] = bool(admin_dict.get("is_active", 1))
+        admin_dict.pop('hashed_password', None)
+        return admin_dict
+    return None
 
 async def authenticate_admin(db: Database, email: str, password: str) -> Optional[dict]:
     """Authenticate admin user"""
@@ -57,7 +65,18 @@ async def authenticate_admin(db: Database, email: str, password: str) -> Optiona
                 detail="Admin account is inactive"
             )
         
-        hashed_password = admin.get('hashed_password', '')
+        # Get the full admin record with password
+        query = select(AdminUser).where(AdminUser.email == email)
+        full_admin = await db.fetch_one(query)
+        if not full_admin:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Admin not found"
+            )
+        
+        admin_dict = dict(full_admin)
+        hashed_password = admin_dict.get('hashed_password', '')
+        
         if not hashed_password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -65,8 +84,8 @@ async def authenticate_admin(db: Database, email: str, password: str) -> Optiona
             )
         
         if verify_password(password, hashed_password):
-            admin_dict = dict(admin)
             admin_dict.pop('hashed_password', None)
+            admin_dict["is_active"] = bool(admin_dict.get("is_active", 1))
             return admin_dict
         else:
             raise HTTPException(
@@ -107,6 +126,7 @@ async def create_admin_user(db: Database, admin: schemas.AdminCreate) -> dict:
         if result:
             admin_dict = dict(result)
             admin_dict.pop('hashed_password', None)
+            admin_dict["is_active"] = bool(admin_dict.get("is_active", 1))
             return admin_dict
         return None
         
@@ -123,6 +143,7 @@ async def get_admin_users(db: Database, skip: int = 0, limit: int = 100) -> List
     for admin in results:
         admin_dict = dict(admin)
         admin_dict.pop('hashed_password', None)
+        admin_dict["is_active"] = bool(admin_dict.get("is_active", 1))
         admin_list.append(admin_dict)
     return admin_list
 
@@ -132,6 +153,7 @@ async def get_admin_user(db: Database, admin_id: int) -> Optional[dict]:
     if result:
         admin_dict = dict(result)
         admin_dict.pop('hashed_password', None)
+        admin_dict["is_active"] = bool(admin_dict.get("is_active", 1))
         return admin_dict
     return None
 
@@ -260,6 +282,9 @@ async def create_order(db: Database, order: schemas.OrderCreate) -> dict:
     order_data['khqr_md5'] = None
     order_data['admin_notes'] = None
     
+    # Convert items to JSON string
+    order_data['items'] = json.dumps(order_data['items'])
+    
     if not order_data.get('notes'):
         order_data['notes'] = ''
     
@@ -277,6 +302,14 @@ async def create_order(db: Database, order: schemas.OrderCreate) -> dict:
         order_dict['admin_notes'] = order_dict.get('admin_notes')
         order_dict['notes'] = order_dict.get('notes', '')
         order_dict['updated_at'] = order_dict.get('updated_at')
+        
+        # Parse items back from JSON
+        if isinstance(order_dict.get('items'), str):
+            try:
+                order_dict['items'] = json.loads(order_dict['items'])
+            except:
+                order_dict['items'] = []
+        
         return order_dict
     
     return None
