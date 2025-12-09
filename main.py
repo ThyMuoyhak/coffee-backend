@@ -1,4 +1,4 @@
-# main.py - Complete fixed version
+# main.py
 import warnings
 warnings.filterwarnings("ignore", message="Valid config keys have changed in V2")
 
@@ -15,7 +15,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta
 import time
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import traceback
 import jwt
 import hashlib
@@ -149,6 +149,7 @@ async def create_sample_data():
             hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
             
             print(f"🔑 Generated hash length: {len(hashed_password)}")
+            print(f"🔑 Hash sample: {hashed_password[:50]}...")
             
             insert_query = """
             INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
@@ -168,8 +169,15 @@ async def create_sample_data():
             )
             
             print("✅ Default admin created successfully!")
+            print(f"   Email: admin@gmail.com")
+            print(f"   Password: 11112222")
+            print(f"   Hash length: {len(hashed_password)}")
         else:
             print(f"✅ Admin already exists in database")
+            print(f"   Admin ID: {existing_admin['id']}")
+            print(f"   Email: {existing_admin['email']}")
+            print(f"   Stored hash length: {existing_admin['hash_len']}")
+            print(f"   Hash sample: {existing_admin['hashed_password'][:50]}...")
             
     except Exception as e:
         print(f"❌ Error creating admin: {e}")
@@ -194,60 +202,6 @@ async def check_payment_status_demo(order_number: str):
     else:
         active_payment_checks[order_number]['status'] = 'failed'
         print(f"❌ Failed to update payment status for order {order_number}")
-
-# ========== HELPER FUNCTIONS ==========
-def parse_order_items(items_data: Any) -> List[Dict[str, Any]]:
-    """Parse order items from JSON string or list"""
-    if isinstance(items_data, str):
-        try:
-            items = json.loads(items_data)
-            if isinstance(items, list):
-                return items
-            elif isinstance(items, dict):
-                # Handle single item object
-                return [items]
-        except:
-            return []
-    elif isinstance(items_data, list):
-        return items_data
-    return []
-
-def format_order_for_response(order_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Format order dictionary for API response"""
-    # Parse items from JSON string
-    items = parse_order_items(order_dict.get('items', '[]'))
-    
-    # Ensure items have required fields
-    formatted_items = []
-    for item in items:
-        formatted_item = {
-            "product_id": item.get("product_id", item.get("id", 0)),
-            "product_name": item.get("product_name", item.get("name", "")),
-            "quantity": item.get("quantity", 1),
-            "price": float(item.get("price", 0.0)),
-            "sugar_level": item.get("sugar_level", item.get("sugarLevel", "regular"))
-        }
-        formatted_items.append(formatted_item)
-    
-    # Return formatted order
-    return {
-        "id": order_dict.get("id", 0),
-        "order_number": order_dict.get("order_number", ""),
-        "customer_name": order_dict.get("customer_name", ""),
-        "phone_number": order_dict.get("phone_number", ""),
-        "delivery_address": order_dict.get("delivery_address", ""),
-        "items": formatted_items,
-        "total_amount": float(order_dict.get("total_amount", 0.0)),
-        "currency": order_dict.get("currency", "USD"),
-        "status": order_dict.get("status", "pending"),
-        "payment_status": order_dict.get("payment_status", "pending"),
-        "payment_method": order_dict.get("payment_method", "khqr"),
-        "khqr_md5": order_dict.get("khqr_md5"),
-        "notes": order_dict.get("notes", ""),
-        "admin_notes": order_dict.get("admin_notes", ""),
-        "created_at": order_dict.get("created_at"),
-        "updated_at": order_dict.get("updated_at")
-    }
 
 # ========== AUTHENTICATION ENDPOINTS ==========
 
@@ -307,12 +261,6 @@ async def admin_login_admin_panel(login_data: schemas.AdminLogin):
         print(f"Login error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Login failed")
 
-# Original auth login endpoint
-@app.post("/api/v1/auth/login", response_model=schemas.Token)
-async def admin_login(login_data: schemas.AdminLogin):
-    """Admin login endpoint (original)"""
-    return await admin_login_admin_panel(login_data)
-
 @app.get("/api/v1/auth/me", response_model=schemas.AdminUser)
 async def get_current_admin_info(current_admin = Depends(get_current_admin)):
     """Get current admin information"""
@@ -324,11 +272,6 @@ async def get_current_admin_info(current_admin = Depends(get_current_admin)):
         "is_active": current_admin["is_active"],
         "created_at": current_admin["created_at"]
     }
-
-@app.post("/api/v1/auth/logout")
-async def admin_logout(current_admin = Depends(get_current_admin)):
-    """Admin logout endpoint"""
-    return {"message": "Successfully logged out"}
 
 # ========== PUBLIC PRODUCT ENDPOINTS ==========
 @app.get("/api/v1/products/", response_model=List[schemas.CoffeeProduct])
@@ -361,156 +304,42 @@ async def get_products_by_category(category: str):
     filtered_products = [product for product in products if product.get("category") == category]
     return filtered_products
 
-# ========== ADMIN PRODUCT MANAGEMENT ==========
-@app.get("/api/v1/admin/products/", response_model=List[schemas.CoffeeProduct])
-async def admin_read_products(
-    skip: int = 0,
-    limit: int = 100,
-    current_admin = Depends(get_current_admin)
-):
-    """Get all products (Admin only)"""
-    try:
-        products = await crud.get_products(database, skip=skip, limit=limit)
-        print(f"✅ Returning {len(products)} products to admin")
-        return products
-    except Exception as e:
-        print(f"❌ Error getting products for admin: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# ========== CART ENDPOINTS ==========
+@app.get("/api/v1/cart/", response_model=List[schemas.CartItem])
+async def read_cart_items(skip: int = 0, limit: int = 100):
+    return await crud.get_cart_items(database, skip=skip, limit=limit)
 
-@app.post("/api/v1/admin/products/", response_model=schemas.CoffeeProduct)
-async def admin_create_product(
-    product: schemas.CoffeeProductCreate,
-    current_admin = Depends(get_current_admin)
-):
-    """Create product (Admin only)"""
-    return await crud.create_product(database, product=product)
+@app.post("/api/v1/cart/", response_model=schemas.CartItem)
+async def add_to_cart(cart_item: schemas.CartItemCreate):
+    return await crud.create_cart_item(database, cart_item=cart_item)
 
-@app.put("/api/v1/admin/products/{product_id}", response_model=schemas.CoffeeProduct)
-async def admin_update_product(
-    product_id: int,
-    product: schemas.CoffeeProductUpdate,
-    current_admin = Depends(get_current_admin)
-):
-    """Update product (Admin only)"""
-    db_product = await crud.update_product(database, product_id=product_id, product_update=product)
-    if db_product is None:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return db_product
-
-@app.delete("/api/v1/admin/products/{product_id}")
-async def admin_delete_product(
-    product_id: int,
-    current_admin = Depends(get_current_admin)
-):
-    """Delete product (Admin only)"""
-    success = await crud.delete_product(database, product_id=product_id)
+@app.delete("/api/v1/cart/{cart_item_id}")
+async def remove_from_cart(cart_item_id: int):
+    success = await crud.delete_cart_item(database, cart_item_id=cart_item_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return {"message": "Product deleted successfully"}
+        raise HTTPException(status_code=404, detail="Cart item not found")
+    return {"message": "Item removed from cart"}
 
-# ========== ADMIN ORDER MANAGEMENT ==========
-@app.get("/api/v1/admin/orders", response_model=List[schemas.Order])
-async def get_admin_orders(
-    skip: int = 0,
-    limit: int = 100,
-    status: Optional[str] = None,
-    current_admin = Depends(get_current_admin)
-):
-    """Get all orders (Admin only)"""
-    try:
-        # Get orders from database
-        if status:
-            raw_orders = await crud.get_orders_by_status(database, status)
-        else:
-            raw_orders = await crud.get_orders(database, skip=skip, limit=limit)
-        
-        # Format orders for response
-        formatted_orders = []
-        for order in raw_orders:
-            formatted_order = format_order_for_response(order)
-            formatted_orders.append(formatted_order)
-        
-        print(f"✅ Returning {len(formatted_orders)} orders to admin")
-        return formatted_orders
-    except Exception as e:
-        print(f"❌ Error getting orders for admin: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/admin/orders/{order_id}", response_model=schemas.Order)
-async def get_admin_order_by_id(
-    order_id: int,
-    current_admin = Depends(get_current_admin)
-):
-    """Get specific order by ID (Admin only)"""
-    try:
-        # Get order from database
-        query = "SELECT * FROM orders WHERE id = :order_id"
-        order_record = await database.fetch_one(query, {"order_id": order_id})
-        
-        if not order_record:
-            raise HTTPException(status_code=404, detail="Order not found")
-        
-        order_dict = dict(order_record)
-        formatted_order = format_order_for_response(order_dict)
-        
-        return formatted_order
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Error getting order: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.patch("/api/v1/admin/orders/{order_number}/status")
-async def update_order_status_admin(
-    order_number: str,
-    status_update: schemas.OrderStatusUpdate,
-    current_admin = Depends(get_current_admin)
-):
-    """Update order status (Admin only)"""
-    try:
-        db_order = await crud.get_order_by_number(database, order_number=order_number)
-        if not db_order:
-            raise HTTPException(status_code=404, detail="Order not found")
-        
-        order_update = schemas.OrderUpdate(status=status_update.status)
-        updated_order = await crud.update_order(database, db_order["id"], order_update)
-        
-        if not updated_order:
-            raise HTTPException(status_code=500, detail="Failed to update order")
-        
-        formatted_order = format_order_for_response(updated_order)
-        return formatted_order
-        
-    except Exception as e:
-        print(f"❌ Error updating order status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== ADMIN DASHBOARD ==========
-@app.get("/api/v1/admin/dashboard/stats")
-async def get_admin_dashboard_stats(current_admin = Depends(get_current_admin)):
-    """Get dashboard stats for admin panel"""
-    try:
-        stats = await crud.get_dashboard_stats(database)
-        return stats
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
-async def get_admin_me(current_admin = Depends(get_current_admin)):
-    """Get current admin info for admin panel"""
-    return current_admin
+@app.delete("/api/v1/cart/")
+async def clear_cart():
+    success = await crud.clear_cart(database)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to clear cart")
+    return {"message": "Cart cleared successfully"}
 
 # ========== PUBLIC ORDERS ENDPOINTS ==========
 @app.get("/api/v1/orders/", response_model=List[schemas.Order])
 async def read_orders(skip: int = 0, limit: int = 100):
     try:
-        raw_orders = await crud.get_orders(database, skip=skip, limit=limit)
-        formatted_orders = []
-        for order in raw_orders:
-            formatted_order = format_order_for_response(order)
-            formatted_orders.append(formatted_order)
-        return formatted_orders
+        orders = await crud.get_orders(database, skip=skip, limit=limit)
+        # Parse items from JSON string
+        for order in orders:
+            if isinstance(order.get("items"), str):
+                try:
+                    order["items"] = json.loads(order["items"])
+                except:
+                    order["items"] = []
+        return orders
     except Exception as e:
         print(f"❌ Error getting orders: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -529,8 +358,7 @@ async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundT
         
         background_tasks.add_task(check_payment_status_demo, db_order['order_number'])
         
-        formatted_order = format_order_for_response(db_order)
-        return formatted_order
+        return db_order
     except Exception as e:
         print(f"❌ Error creating order: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
@@ -540,9 +368,13 @@ async def read_order(order_number: str):
     db_order = await crud.get_order_by_number(database, order_number=order_number)
     if db_order is None:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    formatted_order = format_order_for_response(db_order)
-    return formatted_order
+    # Parse items from JSON string
+    if isinstance(db_order.get("items"), str):
+        try:
+            db_order["items"] = json.loads(db_order["items"])
+        except:
+            db_order["items"] = []
+    return db_order
 
 # ========== KHQR PAYMENT ENDPOINTS ==========
 @app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
@@ -593,6 +425,47 @@ async def get_payment_status(order_number: str):
         print(f"❌ Payment status check failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Payment status check failed: {str(e)}")
 
+# ========== ADMIN MANAGEMENT ENDPOINTS ==========
+@app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
+async def get_admin_me(current_admin = Depends(get_current_admin)):
+    """Get current admin info for admin panel"""
+    return current_admin
+
+@app.get("/api/v1/admin/dashboard/stats")
+async def get_admin_dashboard_stats(current_admin = Depends(get_current_admin)):
+    """Get dashboard stats for admin panel"""
+    try:
+        stats = await crud.get_dashboard_stats(database)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/admin/orders/", response_model=List[schemas.Order])
+async def get_admin_orders(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    current_admin = Depends(get_current_admin)
+):
+    """Get all orders (Admin only)"""
+    try:
+        if status:
+            orders = await crud.get_orders_by_status(database, status)
+        else:
+            orders = await crud.get_orders(database, skip=skip, limit=limit)
+        
+        # Parse items from JSON string
+        for order in orders:
+            if isinstance(order.get("items"), str):
+                try:
+                    order["items"] = json.loads(order["items"])
+                except:
+                    order["items"] = []
+        return orders
+    except Exception as e:
+        print(f"❌ Error getting admin orders: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ========== ROOT ENDPOINTS ==========
 @app.get("/")
 async def read_root():
@@ -604,9 +477,6 @@ async def read_root():
             "health": "/health",
             "products": "/api/v1/products/",
             "admin_login": "/api/v1/admin/login",
-            "admin_dashboard": "/api/v1/admin/dashboard/stats",
-            "admin_orders": "/api/v1/admin/orders",
-            "admin_products": "/api/v1/admin/products/",
             "test_admin": "/test-admin",
             "reset_admin": "/reset-admin"
         }
@@ -635,11 +505,13 @@ async def test_admin():
         test_email = "admin@gmail.com"
         test_password = "11112222"
         
+        print(f"🔐 Testing admin credentials for: {test_email}")
+        
         # Check if admin exists
         query = "SELECT id, email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
-        admin_record = await database.fetch_one(query, {"email": test_email})
+        admin = await database.fetch_one(query, {"email": test_email})
         
-        if not admin_record:
+        if not admin:
             return {
                 "success": False,
                 "message": "Admin not found in database",
@@ -647,9 +519,9 @@ async def test_admin():
                 "action": "Try /reset-admin to create admin"
             }
         
-        admin = dict(admin_record)
-        db_hash = admin["hashed_password"]
-        hash_len = admin["hash_len"]
+        admin_dict = dict(admin)
+        db_hash = admin_dict["hashed_password"]
+        hash_len = admin_dict["hash_len"]
         
         # Calculate expected hash
         expected_hash = hashlib.sha256(f"{test_password}{SALT}".encode()).hexdigest()
@@ -657,7 +529,7 @@ async def test_admin():
         return {
             "success": True,
             "admin_exists": True,
-            "admin_id": admin["id"],
+            "admin_id": admin_dict["id"],
             "email": test_email,
             "db_hash_length": hash_len,
             "db_hash_sample": db_hash[:50] + "..." if db_hash else "None",
