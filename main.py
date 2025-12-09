@@ -1,195 +1,204 @@
-# main.py
-import warnings
-warnings.filterwarnings("ignore")
-
+# main.py - COMPLETE WORKING VERSION
 import os
 import json
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from database import database, engine, Base
+import schemas
+import asyncio
+import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional
+import time
+from typing import List, Optional, Dict, Any
 import traceback
 import jwt
 import hashlib
-import asyncio
-import uuid
-import time
+import bcrypt
 
-# Import database
-from database import database
-
-# Environment variable to control docs
-SHOW_DOCS = os.getenv("SHOW_DOCS", "false").lower() == "true"
-
-if SHOW_DOCS:
-    app = FastAPI(
-        title="BrewHaven Coffee Shop API",
-        description="A complete coffee shop backend with FastAPI",
-        version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc"
-    )
-else:
-    app = FastAPI(
-        title="BrewHaven Coffee Shop API",
-        description="A complete coffee shop backend with FastAPI",
-        version="1.0.0",
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None
-    )
+# Simple FastAPI app with docs disabled
+app = FastAPI(
+    title="BrewHaven Coffee Shop API",
+    description="A complete coffee shop backend with FastAPI and KHQR payment integration",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
+)
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://frontend-admin-coffee-backendg2-ce1.vercel.app",
+        "https://frontend-coffee-backendg2.vercel.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "*"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 print("🔄 BrewHaven Coffee Shop API starting...")
 
-# Store active payment checks
-active_payment_checks = {}
-
-# ========== JWT AUTHENTICATION SETUP ==========
+# ========== CONFIGURATION ==========
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 SALT = "brewhaven-coffee-shop-salt"
+security = HTTPBearer()
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+# Store active payment checks
+active_payment_checks = {}
+
+# ========== PASSWORD HANDLING ==========
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against either bcrypt or SHA256 hash"""
+    # Check if it's a bcrypt hash (starts with $2b$)
+    if hashed_password.startswith("$2b$"):
+        try:
+            # Convert to bytes if needed
+            if isinstance(hashed_password, str):
+                hashed_password = hashed_password.encode('utf-8')
+            if isinstance(plain_password, str):
+                plain_password = plain_password.encode('utf-8')
+            
+            return bcrypt.checkpw(plain_password, hashed_password)
+        except Exception as e:
+            print(f"❌ Bcrypt verification error: {e}")
+            return False
+    else:
+        # Assume SHA256 with salt
+        expected_hash = hashlib.sha256(f"{plain_password}{SALT}".encode()).hexdigest()
+        return hashed_password == expected_hash
+
+def hash_password(password: str) -> str:
+    """Hash password using bcrypt (for new passwords)"""
+    # Use bcrypt for new passwords
+    password_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password_bytes, salt).decode('utf-8')
+
+def create_access_token(data: dict):
     """Create JWT access token"""
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# Startup event
+async def get_current_admin(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Get current admin from JWT token"""
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        role: str = payload.get("role")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+        
+        # Get admin and convert to dict
+        query = "SELECT * FROM admin_users WHERE email = :email"
+        admin_record = await database.fetch_one(query, {"email": email})
+        if admin_record is None:
+            raise HTTPException(status_code=401, detail="Admin not found")
+        
+        admin = dict(admin_record)
+        
+        # Convert is_active to boolean
+        admin["is_active"] = bool(admin.get("is_active", 1))
+        
+        if not admin["is_active"]:
+            raise HTTPException(status_code=403, detail="Admin account is disabled")
+        
+        return admin
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        print(f"❌ Token error: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
+
+async def get_current_super_admin(current_admin = Depends(get_current_admin)):
+    """Ensure the admin is a super admin"""
+    if current_admin["role"] != "super_admin":
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_admin
+
+# ========== DATABASE SETUP ==========
 @app.on_event("startup")
 async def startup():
     await database.connect()
-    await create_sample_data()
+    await ensure_default_admin()
+    await create_sample_products()
 
-# Shutdown event
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
 
-async def create_sample_data():
-    """Create sample data and ensure default admin exists"""
-    print("\n🔄 Setting up sample data...")
+async def ensure_default_admin():
+    """Ensure default admin exists with bcrypt password"""
+    print("👤 Ensuring default admin exists...")
     
-    # Create tables if they don't exist
-    try:
-        # Admin users table
-        await database.execute("""
-            CREATE TABLE IF NOT EXISTS admin_users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                hashed_password TEXT NOT NULL,
-                full_name TEXT NOT NULL,
-                role TEXT DEFAULT 'admin',
-                is_active BOOLEAN DEFAULT 1,
-                last_login DATETIME,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    # Check if admin exists
+    check_query = "SELECT email, hashed_password FROM admin_users WHERE email = 'admin@gmail.com'"
+    existing_admin = await database.fetch_one(check_query)
+    
+    if not existing_admin:
+        print("👤 Creating default admin with bcrypt...")
+        password = "11112222"
+        hashed_password = hash_password(password)
         
-        # Coffee products table
-        await database.execute("""
-            CREATE TABLE IF NOT EXISTS coffee_products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                price REAL NOT NULL,
-                image TEXT,
-                description TEXT,
-                category TEXT,
-                rating REAL DEFAULT 0.0,
-                brew_time TEXT,
-                is_available BOOLEAN DEFAULT 1,
-                stock INTEGER DEFAULT 100,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        insert_query = """
+        INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+        VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+        """
         
-        # Orders table
-        await database.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_number TEXT UNIQUE NOT NULL,
-                customer_name TEXT NOT NULL,
-                phone_number TEXT NOT NULL,
-                delivery_address TEXT,
-                items TEXT,
-                total_amount REAL NOT NULL,
-                currency TEXT DEFAULT 'USD',
-                status TEXT DEFAULT 'pending',
-                payment_status TEXT DEFAULT 'pending',
-                payment_method TEXT DEFAULT 'khqr',
-                khqr_md5 TEXT,
-                notes TEXT,
-                admin_notes TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Cart items table
-        await database.execute("""
-            CREATE TABLE IF NOT EXISTS cart_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                product_id INTEGER,
-                product_name TEXT,
-                quantity INTEGER,
-                price REAL,
-                sugar_level TEXT DEFAULT 'regular',
-                image TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        print("✅ Database tables created/verified")
-        
-        # Check if admin exists
-        check_query = "SELECT email FROM admin_users WHERE email = 'admin@gmail.com'"
-        existing_admin = await database.fetch_one(check_query)
-        
-        if not existing_admin:
-            print("👤 Creating new admin...")
-            
-            password = "11112222"
-            hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
-            
-            await database.execute("""
-                INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
-                VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
-            """, {
+        await database.execute(
+            query=insert_query,
+            values={
                 "email": "admin@gmail.com",
                 "hashed_password": hashed_password,
                 "full_name": "System Administrator",
                 "role": "super_admin",
                 "is_active": 1,
                 "created_at": datetime.utcnow()
-            })
+            }
+        )
+        print("✅ Default admin created with bcrypt hash")
+        print(f"🔑 Hash: {hashed_password[:30]}...")
+    else:
+        admin = dict(existing_admin)
+        print(f"✅ Admin already exists")
+        print(f"🔑 Stored hash type: {'bcrypt' if admin['hashed_password'].startswith('$2b$') else 'SHA256'}")
+        print(f"🔑 Hash sample: {admin['hashed_password'][:30]}...")
+        
+        # If it's not bcrypt, convert it
+        if not admin['hashed_password'].startswith("$2b$"):
+            print("🔄 Converting SHA256 hash to bcrypt...")
+            password = "11112222"
+            hashed_password = hash_password(password)
             
-            print("✅ Default admin created!")
-            print(f"   Email: admin@gmail.com")
-            print(f"   Password: 11112222")
-        else:
-            print("✅ Admin already exists")
-            
-        # Check if products exist
-        product_count = await database.fetch_one("SELECT COUNT(*) as count FROM coffee_products")
-        if product_count['count'] == 0:
+            update_query = """
+            UPDATE admin_users 
+            SET hashed_password = :hashed_password 
+            WHERE email = 'admin@gmail.com'
+            """
+            await database.execute(update_query, {"hashed_password": hashed_password})
+            print("✅ Converted to bcrypt hash")
+
+async def create_sample_products():
+    """Create sample products if none exist"""
+    try:
+        count_query = "SELECT COUNT(*) as count FROM coffee_products"
+        result = await database.fetch_one(count_query)
+        count = result["count"] if result else 0
+        
+        if count == 0:
             print("📦 Creating sample products...")
             
             sample_products = [
@@ -214,20 +223,36 @@ async def create_sample_data():
                     "brew_time": "3m",
                     "is_available": 1,
                     "stock": 80
+                },
+                {
+                    "name": "Latte",
+                    "price": 5.00,
+                    "image": "https://images.unsplash.com/photo-1561047029-3000c68339ca",
+                    "description": "Smooth espresso with steamed milk",
+                    "category": "milk",
+                    "rating": 4.9,
+                    "brew_time": "4m",
+                    "is_available": 1,
+                    "stock": 90
                 }
             ]
             
             for product in sample_products:
-                await database.execute("""
-                    INSERT INTO coffee_products (name, price, image, description, category, rating, brew_time, is_available, stock, created_at)
-                    VALUES (:name, :price, :image, :description, :category, :rating, :brew_time, :is_available, :stock, :created_at)
-                """, {**product, "created_at": datetime.utcnow()})
+                insert_query = """
+                INSERT INTO coffee_products (name, price, image, description, category, rating, brew_time, is_available, stock, created_at)
+                VALUES (:name, :price, :image, :description, :category, :rating, :brew_time, :is_available, :stock, :created_at)
+                """
+                await database.execute(
+                    query=insert_query,
+                    values={**product, "created_at": datetime.utcnow()}
+                )
             
             print(f"✅ Created {len(sample_products)} sample products")
+        else:
+            print(f"✅ {count} products already exist")
             
     except Exception as e:
-        print(f"❌ Error setting up data: {e}")
-        traceback.print_exc()
+        print(f"❌ Error creating sample products: {e}")
 
 # Background task for demo payments
 async def check_payment_status_demo(order_number: str):
@@ -241,62 +266,101 @@ async def check_payment_status_demo(order_number: str):
     
     await asyncio.sleep(3)
     
-    # Update order payment status
+    # Update payment status in database
     try:
+        update_query = """
+        UPDATE orders 
+        SET payment_status = 'paid', khqr_md5 = :khqr_md5 
+        WHERE order_number = :order_number
+        """
         await database.execute(
-            "UPDATE orders SET payment_status = 'paid', khqr_md5 = :md5 WHERE order_number = :order_number",
-            {"md5": "demo_md5_hash", "order_number": order_number}
+            query=update_query,
+            values={"order_number": order_number, "khqr_md5": "demo_md5_hash"}
         )
         active_payment_checks[order_number]['status'] = 'paid'
         print(f"✅ Demo payment confirmed for order {order_number}")
-    except:
+    except Exception as e:
         active_payment_checks[order_number]['status'] = 'failed'
-        print(f"❌ Failed to update payment status for order {order_number}")
+        print(f"❌ Failed to update payment status for order {order_number}: {e}")
+
+# ========== HELPER FUNCTIONS ==========
+def parse_order_items(items_data: Any) -> List[Dict[str, Any]]:
+    """Parse order items from JSON string or list"""
+    if isinstance(items_data, str):
+        try:
+            items = json.loads(items_data)
+            if isinstance(items, list):
+                return items
+            elif isinstance(items, dict):
+                return [items]
+        except:
+            return []
+    elif isinstance(items_data, list):
+        return items_data
+    return []
+
+def format_order_for_response(order_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Format order dictionary for API response"""
+    # Parse items from JSON string
+    items = parse_order_items(order_dict.get('items', '[]'))
+    
+    # Ensure items have required fields
+    formatted_items = []
+    for item in items:
+        formatted_item = {
+            "product_id": item.get("product_id", item.get("id", 0)),
+            "product_name": item.get("product_name", item.get("name", "")),
+            "quantity": item.get("quantity", 1),
+            "price": float(item.get("price", 0.0)),
+            "sugar_level": item.get("sugar_level", item.get("sugarLevel", "regular"))
+        }
+        formatted_items.append(formatted_item)
+    
+    # Return formatted order
+    return {
+        "id": order_dict.get("id", 0),
+        "order_number": order_dict.get("order_number", ""),
+        "customer_name": order_dict.get("customer_name", ""),
+        "phone_number": order_dict.get("phone_number", ""),
+        "delivery_address": order_dict.get("delivery_address", ""),
+        "items": formatted_items,
+        "total_amount": float(order_dict.get("total_amount", 0.0)),
+        "currency": order_dict.get("currency", "USD"),
+        "status": order_dict.get("status", "pending"),
+        "payment_status": order_dict.get("payment_status", "pending"),
+        "payment_method": order_dict.get("payment_method", "khqr"),
+        "khqr_md5": order_dict.get("khqr_md5"),
+        "notes": order_dict.get("notes", ""),
+        "admin_notes": order_dict.get("admin_notes", ""),
+        "created_at": order_dict.get("created_at"),
+        "updated_at": order_dict.get("updated_at")
+    }
 
 # ========== AUTHENTICATION ENDPOINTS ==========
-
-class AdminLoginRequest:
-    def __init__(self, email: str, password: str):
-        self.email = email
-        self.password = password
-
-@app.post("/api/v1/admin/login")
-async def admin_login(request: dict):
-    """Admin login endpoint"""
+@app.post("/api/v1/admin/login", response_model=schemas.Token)
+async def admin_login(login_data: schemas.AdminLogin):
+    """Admin login endpoint - SUPPORTS BCRYPT"""
     try:
-        email = request.get("email")
-        password = request.get("password")
+        print(f"🔐 Login attempt for: {login_data.email}")
         
-        print(f"🔐 ADMIN LOGIN ATTEMPT:")
-        print(f"   Email: {email}")
-        print(f"   Password: {'*' * len(password) if password else 'None'}")
-        
-        if not email or not password:
-            raise HTTPException(status_code=400, detail="Email and password required")
-        
-        # Check if admin exists
-        query = "SELECT id, email, hashed_password, role, full_name FROM admin_users WHERE email = :email"
-        admin_record = await database.fetch_one(query, {"email": email})
+        # Direct database query
+        query = "SELECT id, email, hashed_password, role, is_active, full_name FROM admin_users WHERE email = :email"
+        admin_record = await database.fetch_one(query, {"email": login_data.email})
         
         if not admin_record:
-            print(f"❌ Admin not found: {email}")
+            print(f"❌ Admin not found: {login_data.email}")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         admin = dict(admin_record)
         print(f"✅ Admin found: {admin['email']}")
+        print(f"🔑 Hash type: {'bcrypt' if admin['hashed_password'].startswith('$2b$') else 'SHA256'}")
         
-        # Calculate expected hash
-        expected_hash = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
-        print(f"🔑 Hash comparison:")
-        print(f"   Stored:   {admin['hashed_password'][:20]}...")
-        print(f"   Expected: {expected_hash[:20]}...")
-        
-        # Verify password
-        if admin["hashed_password"] != expected_hash:
-            print(f"❌ Password verification FAILED!")
+        # Verify password with bcrypt support
+        if not verify_password(login_data.password, admin["hashed_password"]):
+            print(f"❌ Password verification failed!")
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
-        print(f"✅ Password verification SUCCESS!")
+        print(f"✅ Password verified!")
         
         # Update last login
         await database.execute(
@@ -309,8 +373,6 @@ async def admin_login(request: dict):
             data={"sub": admin["email"], "role": admin["role"]}
         )
         
-        print(f"✅ Login successful for: {admin['email']}")
-        
         return {
             "access_token": access_token,
             "token_type": "bearer",
@@ -319,7 +381,7 @@ async def admin_login(request: dict):
                 "email": admin["email"],
                 "full_name": admin.get("full_name", "Administrator"),
                 "role": admin["role"],
-                "is_active": True
+                "is_active": bool(admin.get("is_active", 1))
             }
         }
         
@@ -328,23 +390,40 @@ async def admin_login(request: dict):
     except Exception as e:
         print(f"❌ Login error: {str(e)}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Login failed")
+
+@app.post("/api/v1/auth/login", response_model=schemas.Token)
+async def auth_login(login_data: schemas.AdminLogin):
+    """Alternative auth login endpoint"""
+    return await admin_login(login_data)
+
+@app.get("/api/v1/auth/me", response_model=schemas.AdminUser)
+async def get_current_admin_info(current_admin = Depends(get_current_admin)):
+    """Get current admin information"""
+    return {
+        "id": current_admin["id"],
+        "email": current_admin["email"],
+        "full_name": current_admin["full_name"],
+        "role": current_admin["role"],
+        "is_active": current_admin["is_active"],
+        "created_at": current_admin["created_at"]
+    }
 
 # ========== PUBLIC PRODUCT ENDPOINTS ==========
-
-@app.get("/api/v1/products/")
+@app.get("/api/v1/products/", response_model=List[schemas.CoffeeProduct])
 async def read_products(skip: int = 0, limit: int = 100):
+    """Get all products"""
     try:
-        query = "SELECT * FROM coffee_products WHERE is_available = 1 LIMIT :limit OFFSET :skip"
-        products = await database.fetch_all(query, {"skip": skip, "limit": limit})
-        print(f"✅ Returning {len(products)} products")
+        query = "SELECT * FROM coffee_products WHERE is_available = 1 ORDER BY id LIMIT :limit OFFSET :skip"
+        products = await database.fetch_all(query, {"limit": limit, "skip": skip})
         return [dict(product) for product in products]
     except Exception as e:
         print(f"❌ Error getting products: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/products/{product_id}")
+@app.get("/api/v1/products/{product_id}", response_model=schemas.CoffeeProduct)
 async def read_product(product_id: int):
+    """Get single product by ID"""
     try:
         query = "SELECT * FROM coffee_products WHERE id = :id"
         product = await database.fetch_one(query, {"id": product_id})
@@ -356,158 +435,249 @@ async def read_product(product_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ========== ORDER ENDPOINTS ==========
-
-class OrderItem:
-    def __init__(self, product_id: int, product_name: str, quantity: int, price: float, sugar_level: str = "regular"):
-        self.product_id = product_id
-        self.product_name = product_name
-        self.quantity = quantity
-        self.price = price
-        self.sugar_level = sugar_level
-
-class OrderCreateRequest:
-    def __init__(self, customer_name: str, phone_number: str, items: List[dict], 
-                 total_amount: float, delivery_address: str = None, notes: str = None):
-        self.customer_name = customer_name
-        self.phone_number = phone_number
-        self.items = items
-        self.total_amount = total_amount
-        self.delivery_address = delivery_address
-        self.notes = notes
-
-@app.post("/api/v1/orders/")
-async def create_order(request: dict, background_tasks: BackgroundTasks):
+@app.get("/api/v1/categories/")
+async def get_categories():
+    """Get all product categories"""
     try:
-        print(f"📦 Creating order for: {request.get('customer_name')}")
-        
-        # Generate order number
-        order_number = f"BH{datetime.now().strftime('%Y%m%d')}{uuid.uuid4().hex[:8].upper()}"
-        
-        # Create order data
-        order_data = {
-            "order_number": order_number,
-            "customer_name": request.get("customer_name"),
-            "phone_number": request.get("phone_number"),
-            "delivery_address": request.get("delivery_address"),
-            "items": json.dumps(request.get("items", [])),
-            "total_amount": request.get("total_amount", 0),
-            "currency": "USD",
-            "status": "pending",
-            "payment_status": "pending",
-            "payment_method": "khqr",
-            "khqr_md5": None,
-            "notes": request.get("notes", ""),
-            "admin_notes": None,
-            "created_at": datetime.utcnow()
-        }
-        
-        # Insert order
-        query = """
-            INSERT INTO orders (order_number, customer_name, phone_number, delivery_address, 
-                               items, total_amount, currency, status, payment_status, 
-                               payment_method, khqr_md5, notes, admin_notes, created_at)
-            VALUES (:order_number, :customer_name, :phone_number, :delivery_address, 
-                    :items, :total_amount, :currency, :status, :payment_status, 
-                    :payment_method, :khqr_md5, :notes, :admin_notes, :created_at)
-        """
-        
-        await database.execute(query, order_data)
-        
-        # Get the created order
-        order_query = "SELECT * FROM orders WHERE order_number = :order_number"
-        db_order = await database.fetch_one(order_query, {"order_number": order_number})
-        
-        if not db_order:
-            raise HTTPException(status_code=500, detail="Failed to create order")
-        
-        order_dict = dict(db_order)
-        
-        # Parse items from JSON
-        if isinstance(order_dict.get('items'), str):
-            try:
-                order_dict['items'] = json.loads(order_dict['items'])
-            except:
-                order_dict['items'] = []
-        
-        print(f"✅ Order created: {order_number}")
-        
-        # Start background payment simulation
-        background_tasks.add_task(check_payment_status_demo, order_number)
-        
-        return order_dict
-        
+        query = "SELECT DISTINCT category FROM coffee_products WHERE category IS NOT NULL AND category != ''"
+        results = await database.fetch_all(query)
+        categories = [row["category"] for row in results]
+        return {"categories": categories}
     except Exception as e:
-        print(f"❌ Error creating order: {str(e)}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/orders/{order_number}")
-async def read_order(order_number: str):
+@app.get("/api/v1/products/category/{category}")
+async def get_products_by_category(category: str):
+    """Get products by category"""
     try:
-        query = "SELECT * FROM orders WHERE order_number = :order_number"
-        db_order = await database.fetch_one(query, {"order_number": order_number})
-        if not db_order:
-            raise HTTPException(status_code=404, detail="Order not found")
+        query = "SELECT * FROM coffee_products WHERE category = :category AND is_available = 1"
+        products = await database.fetch_all(query, {"category": category})
+        return [dict(product) for product in products]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== ADMIN PRODUCT MANAGEMENT ==========
+@app.get("/api/v1/admin/products/", response_model=List[schemas.CoffeeProduct])
+async def admin_read_products(
+    skip: int = 0,
+    limit: int = 100,
+    current_admin = Depends(get_current_admin)
+):
+    """Get all products (Admin only)"""
+    try:
+        query = "SELECT * FROM coffee_products ORDER BY id LIMIT :limit OFFSET :skip"
+        products = await database.fetch_all(query, {"limit": limit, "skip": skip})
+        return [dict(product) for product in products]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/admin/products/", response_model=schemas.CoffeeProduct)
+async def admin_create_product(
+    product: schemas.CoffeeProductCreate,
+    current_admin = Depends(get_current_admin)
+):
+    """Create product (Admin only)"""
+    try:
+        query = """
+        INSERT INTO coffee_products (name, price, image, description, category, rating, brew_time, is_available, stock, created_at)
+        VALUES (:name, :price, :image, :description, :category, :rating, :brew_time, :is_available, :stock, :created_at)
+        """
+        product_id = await database.execute(
+            query=query,
+            values={
+                **product.dict(),
+                "is_available": 1 if product.is_available else 0,
+                "created_at": datetime.utcnow()
+            }
+        )
         
-        order_dict = dict(db_order)
+        # Return created product
+        query = "SELECT * FROM coffee_products WHERE id = :id"
+        created_product = await database.fetch_one(query, {"id": product_id})
+        return dict(created_product)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/admin/products/{product_id}", response_model=schemas.CoffeeProduct)
+async def admin_update_product(
+    product_id: int,
+    product_update: schemas.CoffeeProductUpdate,
+    current_admin = Depends(get_current_admin)
+):
+    """Update product (Admin only)"""
+    try:
+        # Check if product exists
+        check_query = "SELECT id FROM coffee_products WHERE id = :id"
+        existing = await database.fetch_one(check_query, {"id": product_id})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Product not found")
         
-        # Parse items from JSON
-        if isinstance(order_dict.get('items'), str):
-            try:
-                order_dict['items'] = json.loads(order_dict['items'])
-            except:
-                order_dict['items'] = []
+        # Build update query
+        update_data = product_update.dict(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No data to update")
         
-        return order_dict
+        # Convert boolean to integer for SQLite
+        if "is_available" in update_data:
+            update_data["is_available"] = 1 if update_data["is_available"] else 0
+        
+        set_clause = ", ".join([f"{key} = :{key}" for key in update_data.keys()])
+        query = f"UPDATE coffee_products SET {set_clause} WHERE id = :id"
+        
+        await database.execute(query=query, values={"id": product_id, **update_data})
+        
+        # Return updated product
+        query = "SELECT * FROM coffee_products WHERE id = :id"
+        updated_product = await database.fetch_one(query, {"id": product_id})
+        return dict(updated_product)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ========== ADMIN DASHBOARD ENDPOINTS ==========
-
-@app.get("/api/v1/admin/dashboard/stats")
-async def get_dashboard_stats():
+@app.delete("/api/v1/admin/products/{product_id}")
+async def admin_delete_product(
+    product_id: int,
+    current_admin = Depends(get_current_admin)
+):
+    """Delete product (Admin only)"""
     try:
-        # Get total orders
-        total_orders_result = await database.fetch_one("SELECT COUNT(*) as count FROM orders")
-        total_orders = total_orders_result['count'] if total_orders_result else 0
+        query = "DELETE FROM coffee_products WHERE id = :id"
+        result = await database.execute(query, {"id": product_id})
+        if result == 0:
+            raise HTTPException(status_code=404, detail="Product not found")
+        return {"message": "Product deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== ADMIN ORDER MANAGEMENT ==========
+@app.get("/api/v1/admin/orders", response_model=List[schemas.Order])
+async def get_admin_orders(
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    current_admin = Depends(get_current_admin)
+):
+    """Get all orders (Admin only)"""
+    try:
+        if status:
+            query = "SELECT * FROM orders WHERE status = :status ORDER BY created_at DESC LIMIT :limit OFFSET :skip"
+            params = {"status": status, "limit": limit, "skip": skip}
+        else:
+            query = "SELECT * FROM orders ORDER BY created_at DESC LIMIT :limit OFFSET :skip"
+            params = {"limit": limit, "skip": skip}
         
-        # Get total revenue
-        total_revenue_result = await database.fetch_one("SELECT SUM(total_amount) as total FROM orders")
-        total_revenue = float(total_revenue_result['total']) if total_revenue_result and total_revenue_result['total'] else 0.0
+        orders = await database.fetch_all(query, params)
         
-        # Get total products
-        total_products_result = await database.fetch_one("SELECT COUNT(*) as count FROM coffee_products")
-        total_products = total_products_result['count'] if total_products_result else 0
+        # Format orders for response
+        formatted_orders = []
+        for order in orders:
+            formatted_order = format_order_for_response(dict(order))
+            formatted_orders.append(formatted_order)
         
-        # Get pending orders
-        pending_orders_result = await database.fetch_one(
-            "SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'preparing')"
+        return formatted_orders
+    except Exception as e:
+        print(f"❌ Error getting orders: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/admin/orders/{order_id}", response_model=schemas.Order)
+async def get_admin_order_by_id(
+    order_id: int,
+    current_admin = Depends(get_current_admin)
+):
+    """Get specific order by ID (Admin only)"""
+    try:
+        query = "SELECT * FROM orders WHERE id = :order_id"
+        order = await database.fetch_one(query, {"order_id": order_id})
+        
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        formatted_order = format_order_for_response(dict(order))
+        return formatted_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/v1/admin/orders/{order_number}/status")
+async def update_order_status_admin(
+    order_number: str,
+    status_update: schemas.OrderStatusUpdate,
+    current_admin = Depends(get_current_admin)
+):
+    """Update order status (Admin only)"""
+    try:
+        # Check if order exists
+        check_query = "SELECT id FROM orders WHERE order_number = :order_number"
+        order = await database.fetch_one(check_query, {"order_number": order_number})
+        
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        
+        # Update status
+        update_query = "UPDATE orders SET status = :status, updated_at = :updated_at WHERE order_number = :order_number"
+        await database.execute(
+            query=update_query,
+            values={
+                "status": status_update.status,
+                "updated_at": datetime.utcnow(),
+                "order_number": order_number
+            }
         )
-        pending_orders = pending_orders_result['count'] if pending_orders_result else 0
         
-        # Get completed orders
-        completed_orders_result = await database.fetch_one(
-            "SELECT COUNT(*) as count FROM orders WHERE status = 'completed'"
-        )
-        completed_orders = completed_orders_result['count'] if completed_orders_result else 0
+        # Return updated order
+        query = "SELECT * FROM orders WHERE order_number = :order_number"
+        updated_order = await database.fetch_one(query, {"order_number": order_number})
+        formatted_order = format_order_for_response(dict(updated_order))
+        return formatted_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== ADMIN DASHBOARD ==========
+@app.get("/api/v1/admin/dashboard/stats")
+async def get_admin_dashboard_stats(current_admin = Depends(get_current_admin)):
+    """Get dashboard stats for admin panel"""
+    try:
+        # Total orders
+        total_orders_query = "SELECT COUNT(*) as count FROM orders"
+        total_orders_result = await database.fetch_one(total_orders_query)
+        total_orders = total_orders_result["count"] if total_orders_result else 0
         
-        # Get today's orders
+        # Total revenue
+        total_revenue_query = "SELECT SUM(total_amount) as total FROM orders WHERE payment_status = 'paid'"
+        total_revenue_result = await database.fetch_one(total_revenue_query)
+        total_revenue = float(total_revenue_result["total"]) if total_revenue_result and total_revenue_result["total"] else 0.0
+        
+        # Total products
+        total_products_query = "SELECT COUNT(*) as count FROM coffee_products"
+        total_products_result = await database.fetch_one(total_products_query)
+        total_products = total_products_result["count"] if total_products_result else 0
+        
+        # Pending orders
+        pending_orders_query = "SELECT COUNT(*) as count FROM orders WHERE status IN ('pending', 'preparing')"
+        pending_orders_result = await database.fetch_one(pending_orders_query)
+        pending_orders = pending_orders_result["count"] if pending_orders_result else 0
+        
+        # Completed orders
+        completed_orders_query = "SELECT COUNT(*) as count FROM orders WHERE status = 'completed'"
+        completed_orders_result = await database.fetch_one(completed_orders_query)
+        completed_orders = completed_orders_result["count"] if completed_orders_result else 0
+        
+        # Today's orders
         today = datetime.now().date()
-        today_orders_result = await database.fetch_one(
-            "SELECT COUNT(*) as count FROM orders WHERE DATE(created_at) = :today",
-            {"today": today}
-        )
-        today_orders = today_orders_result['count'] if today_orders_result else 0
+        today_orders_query = "SELECT COUNT(*) as count FROM orders WHERE DATE(created_at) = :today"
+        today_orders_result = await database.fetch_one(today_orders_query, {"today": today})
+        today_orders = today_orders_result["count"] if today_orders_result else 0
         
-        # Get today's revenue
-        today_revenue_result = await database.fetch_one(
-            "SELECT SUM(total_amount) as total FROM orders WHERE DATE(created_at) = :today",
-            {"today": today}
-        )
-        today_revenue = float(today_revenue_result['total']) if today_revenue_result and today_revenue_result['total'] else 0.0
+        # Today's revenue
+        today_revenue_query = "SELECT SUM(total_amount) as total FROM orders WHERE DATE(created_at) = :today AND payment_status = 'paid'"
+        today_revenue_result = await database.fetch_one(today_revenue_query, {"today": today})
+        today_revenue = float(today_revenue_result["total"]) if today_revenue_result and today_revenue_result["total"] else 0.0
         
         return {
             "total_orders": total_orders,
@@ -519,135 +689,174 @@ async def get_dashboard_stats():
             "today_revenue": today_revenue
         }
     except Exception as e:
+        print(f"❌ Error getting dashboard stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/admin/orders/")
-async def get_admin_orders(skip: int = 0, limit: int = 100, status: str = None):
+@app.get("/api/v1/admin/me", response_model=schemas.AdminUser)
+async def get_admin_me(current_admin = Depends(get_current_admin)):
+    """Get current admin info for admin panel"""
+    return current_admin
+
+# ========== PUBLIC ORDERS ENDPOINTS ==========
+@app.get("/api/v1/orders/", response_model=List[schemas.Order])
+async def read_orders(skip: int = 0, limit: int = 100):
+    """Get all orders (public)"""
     try:
-        if status:
-            query = "SELECT * FROM orders WHERE status = :status ORDER BY created_at DESC LIMIT :limit OFFSET :skip"
-            orders = await database.fetch_all(query, {"status": status, "skip": skip, "limit": limit})
-        else:
-            query = "SELECT * FROM orders ORDER BY created_at DESC LIMIT :limit OFFSET :skip"
-            orders = await database.fetch_all(query, {"skip": skip, "limit": limit})
+        query = "SELECT * FROM orders ORDER BY created_at DESC LIMIT :limit OFFSET :skip"
+        orders = await database.fetch_all(query, {"limit": limit, "skip": skip})
         
-        # Parse items from JSON for each order
-        orders_list = []
+        formatted_orders = []
         for order in orders:
-            order_dict = dict(order)
-            if isinstance(order_dict.get('items'), str):
-                try:
-                    order_dict['items'] = json.loads(order_dict['items'])
-                except:
-                    order_dict['items'] = []
-            orders_list.append(order_dict)
-        
-        return orders_list
+            formatted_order = format_order_for_response(dict(order))
+            formatted_orders.append(formatted_order)
+        return formatted_orders
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ========== DEBUG & HEALTH ENDPOINTS ==========
-
-@app.get("/test-admin")
-async def test_admin():
-    """Test endpoint to check admin credentials"""
+@app.post("/api/v1/orders/", response_model=schemas.Order)
+async def create_order(order: schemas.OrderCreate, background_tasks: BackgroundTasks):
+    """Create new order"""
     try:
-        test_email = "admin@gmail.com"
-        test_password = "11112222"
+        print(f"📦 Creating order for: {order.customer_name}")
         
-        print(f"\n🔐 TESTING ADMIN CREDENTIALS:")
-        print(f"  Email: {test_email}")
-        print(f"  Password: {test_password}")
+        # Generate order number
+        order_number = f"BH{datetime.now().strftime('%Y%m%d')}{uuid.uuid4().hex[:8].upper()}"
         
-        # Check if admin exists
-        query = "SELECT id, email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = :email"
-        admin_record = await database.fetch_one(query, {"email": test_email})
+        # Convert items to JSON string
+        items_json = json.dumps([item.dict() for item in order.items])
         
-        if not admin_record:
-            return {
-                "success": False,
-                "message": "❌ Admin not found in database",
-                "email": test_email,
-                "action": "Try /reset-admin to create admin"
+        # Insert order
+        query = """
+        INSERT INTO orders (
+            order_number, customer_name, phone_number, delivery_address, items,
+            total_amount, currency, status, payment_status, payment_method,
+            notes, created_at
+        ) VALUES (
+            :order_number, :customer_name, :phone_number, :delivery_address, :items,
+            :total_amount, :currency, :status, :payment_status, :payment_method,
+            :notes, :created_at
+        )
+        """
+        
+        order_id = await database.execute(
+            query=query,
+            values={
+                "order_number": order_number,
+                "customer_name": order.customer_name,
+                "phone_number": order.phone_number,
+                "delivery_address": order.delivery_address or "",
+                "items": items_json,
+                "total_amount": order.total_amount,
+                "currency": order.currency,
+                "status": "pending",
+                "payment_status": "pending",
+                "payment_method": "khqr",
+                "notes": order.notes or "",
+                "created_at": datetime.utcnow()
             }
+        )
         
-        admin = dict(admin_record)
-        db_hash = admin["hashed_password"]
-        hash_len = admin["hash_len"]
+        # Get created order
+        query = "SELECT * FROM orders WHERE id = :id"
+        db_order = await database.fetch_one(query, {"id": order_id})
         
-        # Calculate expected hash
-        expected_hash = hashlib.sha256(f"{test_password}{SALT}".encode()).hexdigest()
+        print(f"✅ Order created: {order_number}")
         
-        print(f"\n🔑 HASH COMPARISON:")
-        print(f"  Database hash ({hash_len} chars): {db_hash[:50]}...")
-        print(f"  Expected hash ({len(expected_hash)} chars): {expected_hash[:50]}...")
-        print(f"  Hashes match: {db_hash == expected_hash}")
+        # Start background payment check
+        background_tasks.add_task(check_payment_status_demo, order_number)
         
-        return {
-            "success": True,
-            "admin_exists": True,
-            "admin_id": admin["id"],
-            "email": test_email,
-            "db_hash_length": hash_len,
-            "db_hash_sample": db_hash[:50] + "..." if db_hash else "None",
-            "expected_hash_sample": expected_hash[:50] + "...",
-            "hashes_match": db_hash == expected_hash,
-            "login_endpoint": "POST /api/v1/admin/login",
-            "test_password_used": test_password,
-            "note": "If hashes don't match, use /reset-admin endpoint"
-        }
-        
+        formatted_order = format_order_for_response(dict(db_order))
+        return formatted_order
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        print(f"❌ Error creating order: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {str(e)}")
 
-@app.get("/reset-admin")
-async def reset_admin_endpoint():
-    """Endpoint to reset admin password"""
+@app.get("/api/v1/orders/{order_number}", response_model=schemas.Order)
+async def read_order(order_number: str):
+    """Get order by order number"""
     try:
-        # Delete existing admin
-        delete_count = await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
-        print(f"🧹 Deleted {delete_count} admin users")
+        query = "SELECT * FROM orders WHERE order_number = :order_number"
+        db_order = await database.fetch_one(query, {"order_number": order_number})
+        if db_order is None:
+            raise HTTPException(status_code=404, detail="Order not found")
         
-        # Create new admin
-        password = "11112222"
-        hashed_password = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+        formatted_order = format_order_for_response(dict(db_order))
+        return formatted_order
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== KHQR PAYMENT ENDPOINTS ==========
+@app.post("/api/v1/khqr/generate", response_model=schemas.KHQRResponse)
+async def generate_khqr_payment(khqr_request: schemas.KHQRRequest, background_tasks: BackgroundTasks):
+    """Generate demo KHQR for deployment"""
+    print(f"🔄 Generating DEMO KHQR for order: {khqr_request.order_number}")
+    
+    demo_md5 = f"demo_{khqr_request.order_number}_{int(datetime.now().timestamp())}"
+    
+    background_tasks.add_task(check_payment_status_demo, khqr_request.order_number)
+    
+    return schemas.KHQRResponse(
+        qr_data=f"DEMO_QR_FOR_ORDER_{khqr_request.order_number}",
+        md5_hash=demo_md5,
+        deeplink=f"https://example.com/demo/{khqr_request.order_number}",
+        qr_image=None
+    )
+
+@app.get("/api/v1/khqr/status/{order_number}", response_model=schemas.PaymentStatusResponse)
+async def get_payment_status(order_number: str):
+    """Get payment status for order"""
+    try:
+        query = "SELECT * FROM orders WHERE order_number = :order_number"
+        db_order = await database.fetch_one(query, {"order_number": order_number})
+        if db_order is None:
+            raise HTTPException(status_code=404, detail="Order not found")
         
-        print(f"\n🔑 CREATING NEW ADMIN:")
-        print(f"  Email: admin@gmail.com")
-        print(f"  Password: {password}")
-        print(f"  Hash ({len(hashed_password)} chars): {hashed_password[:50]}...")
+        order_dict = dict(db_order)
+        current_status = order_dict.get('payment_status', 'pending')
         
-        await database.execute("""
-            INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
-            VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
-        """, {
-            "email": "admin@gmail.com",
-            "hashed_password": hashed_password,
-            "full_name": "System Administrator",
-            "role": "super_admin",
-            "is_active": 1,
-            "created_at": datetime.utcnow()
-        })
+        active_check = active_payment_checks.get(order_number)
+        if active_check:
+            current_status = active_check['status']
         
-        return {
-            "success": True,
-            "message": "✅ Admin reset successfully",
-            "email": "admin@gmail.com",
-            "password": "11112222",
-            "hash_length": len(hashed_password),
-            "hash_sample": hashed_password[:50] + "...",
-            "login_endpoint": "POST /api/v1/admin/login",
-            "test_endpoint": "/test-admin"
+        transaction_data = {
+            "order_number": order_number,
+            "amount": order_dict.get('total_amount', 0),
+            "currency": order_dict.get('currency', 'USD'),
+            "timestamp": datetime.now().isoformat(),
+            "demo": True,
+            "mode": "demo"
         }
+        
+        return schemas.PaymentStatusResponse(
+            order_number=order_number,
+            payment_status=current_status,
+            transaction_data=transaction_data
+        )
         
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
+        print(f"❌ Payment status check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Payment status check failed: {str(e)}")
+
+# ========== ROOT & HEALTH ENDPOINTS ==========
+@app.get("/")
+async def read_root():
+    return {
+        "message": "Welcome to BrewHaven Coffee Shop API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "products": "/api/v1/products/",
+            "orders": "/api/v1/orders/",
+            "khqr": "/api/v1/khqr/generate",
+            "admin_login": "/api/v1/admin/login",
+            "admin_dashboard": "/api/v1/admin/dashboard/stats",
+            "admin_orders": "/api/v1/admin/orders",
+            "admin_products": "/api/v1/admin/products/"
         }
+    }
 
 @app.get("/health")
 async def health_check():
@@ -658,32 +867,82 @@ async def health_check():
         db_status = "disconnected"
         
     return {
-        "status": "healthy" if db_status == "connected" else "unhealthy",
-        "database": db_status,
+        "status": "healthy", 
+        "database": db_status, 
         "timestamp": datetime.now().isoformat(),
-        "endpoints_available": True,
-        "version": "1.0.0"
+        "endpoints_available": True
     }
 
-@app.get("/")
-async def read_root():
-    return {
-        "message": "Welcome to BrewHaven Coffee Shop API",
-        "version": "1.0.0",
-        "status": "running",
-        "docs": "Documentation is disabled in production",
-        "endpoints": {
-            "health": "/health",
-            "products": "/api/v1/products/",
-            "admin_login": "POST /api/v1/admin/login",
-            "create_order": "POST /api/v1/orders/",
-            "admin_dashboard": "/api/v1/admin/dashboard/stats",
-            "admin_orders": "/api/v1/admin/orders/",
-            "test_admin": "/test-admin",
-            "reset_admin": "/reset-admin"
-        },
-        "note": "Use /test-admin to check admin credentials, /reset-admin to reset if needed"
-    }
+# ========== DEBUG & MAINTENANCE ENDPOINTS ==========
+@app.get("/fix-admin")
+async def fix_admin():
+    """Fix admin password with bcrypt"""
+    try:
+        password = "11112222"
+        hashed_password = hash_password(password)
+        
+        # Delete existing
+        await database.execute("DELETE FROM admin_users WHERE email = 'admin@gmail.com'")
+        
+        # Create new with bcrypt
+        insert_query = """
+        INSERT INTO admin_users (email, hashed_password, full_name, role, is_active, created_at)
+        VALUES (:email, :hashed_password, :full_name, :role, :is_active, :created_at)
+        """
+        
+        await database.execute(
+            query=insert_query,
+            values={
+                "email": "admin@gmail.com",
+                "hashed_password": hashed_password,
+                "full_name": "System Administrator",
+                "role": "super_admin",
+                "is_active": 1,
+                "created_at": datetime.utcnow()
+            }
+        )
+        
+        return {
+            "success": True,
+            "message": "Admin fixed with bcrypt",
+            "email": "admin@gmail.com",
+            "password": "11112222",
+            "hash_type": "bcrypt",
+            "hash_sample": hashed_password[:50] + "..."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/check-hash")
+async def check_hash():
+    """Check current hash type"""
+    try:
+        query = "SELECT email, hashed_password, LENGTH(hashed_password) as hash_len FROM admin_users WHERE email = 'admin@gmail.com'"
+        admin = await database.fetch_one(query)
+        
+        if not admin:
+            return {"exists": False}
+        
+        admin_dict = dict(admin)
+        password = "11112222"
+        
+        # Test both hash types
+        bcrypt_result = verify_password(password, admin_dict["hashed_password"])
+        sha256_hash = hashlib.sha256(f"{password}{SALT}".encode()).hexdigest()
+        sha256_result = admin_dict["hashed_password"] == sha256_hash
+        
+        return {
+            "exists": True,
+            "email": admin_dict["email"],
+            "stored_hash": admin_dict["hashed_password"][:50] + "...",
+            "hash_length": admin_dict["hash_len"],
+            "hash_type": "bcrypt" if admin_dict["hashed_password"].startswith("$2b$") else "unknown",
+            "bcrypt_matches": bcrypt_result,
+            "sha256_matches": sha256_result,
+            "test_password": password
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # Global exception handler
 @app.exception_handler(Exception)
@@ -696,10 +955,10 @@ async def global_exception_handler(request, exc):
     
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"}
+        content={"detail": f"Internal server error occurred: {str(exc)}"}
     )
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting BrewHaven Coffee Shop API...")
+    print("🚀 Starting BrewHaven Coffee Shop API with bcrypt support...")
     uvicorn.run(app, host="0.0.0.0", port=8080)
