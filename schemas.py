@@ -1,5 +1,5 @@
 # schemas.py
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 
@@ -27,7 +27,7 @@ class AdminBase(BaseModel):
     full_name: str
     role: str = "admin"
 
-# Add this - it's missing and causing the error
+# Both are the same, for compatibility
 class AdminUserCreate(AdminBase):
     password: str
 
@@ -54,7 +54,6 @@ class AdminResponse(AdminBase):
     class Config:
         from_attributes = True
 
-# For backward compatibility
 class AdminUser(AdminResponse):
     pass
 
