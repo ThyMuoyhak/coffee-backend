@@ -2,9 +2,10 @@
 import warnings
 warnings.filterwarnings("ignore", message="Valid config keys have changed in V2")
 
+import os
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from database import database, engine, Base
 import schemas
@@ -18,20 +19,26 @@ import traceback
 import jwt
 import hashlib
 
-# Import routers
-try:
-    from admin_api import router as admin_router
-except ImportError:
-    admin_router = None
+# Environment variable to control docs
+SHOW_DOCS = os.getenv("SHOW_DOCS", "false").lower() == "true"
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-app = FastAPI(
-    title="BrewHaven Coffee Shop API",
-    description="A complete coffee shop backend with FastAPI and KHQR payment integration",
-    version="1.0.0"
-)
+if SHOW_DOCS:
+    app = FastAPI(
+        title="BrewHaven Coffee Shop API",
+        description="A complete coffee shop backend with FastAPI",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc"
+    )
+else:
+    app = FastAPI(
+        title="BrewHaven Coffee Shop API",
+        description="A complete coffee shop backend with FastAPI",
+        version="1.0.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None
+    )
 
 # CORS middleware
 app.add_middleware(
@@ -47,9 +54,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include admin router if it exists
-if admin_router:
-    app.include_router(admin_router)
+# Import routers
+try:
+    from admin_api import router as admin_router
+    if admin_router:
+        app.include_router(admin_router)
+except ImportError:
+    pass
 
 print("🔄 BrewHaven Coffee Shop API starting...")
 
@@ -526,16 +537,13 @@ async def read_root():
         "message": "Welcome to BrewHaven Coffee Shop API",
         "version": "1.0.0",
         "status": "running",
-        "demo_mode": True,
-        "active_payments": len(active_payment_checks),
         "endpoints": {
-            "docs": "/docs",
+            "health": "/health",
             "products": "/api/v1/products/",
             "cart": "/api/v1/cart/",
             "orders": "/api/v1/orders/",
             "khqr": "/api/v1/khqr/generate",
-            "auth_login": "/api/v1/auth/login",
-            "admin_endpoints": "/api/v1/admin/ (requires auth)"
+            "auth_login": "/api/v1/auth/login"
         }
     }
 
