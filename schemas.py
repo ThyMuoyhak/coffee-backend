@@ -4,6 +4,57 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 from decimal import Decimal
 
+# ========== AUTHENTICATION SCHEMAS ==========
+class AdminLogin(BaseModel):
+    email: str
+    password: str
+
+class AdminUserLogin(BaseModel):
+    email: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    admin: Optional[Dict[str, Any]] = None
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+    role: Optional[str] = None
+
+# ========== ADMIN MANAGEMENT SCHEMAS ==========
+class AdminBase(BaseModel):
+    email: EmailStr
+    full_name: str
+    role: str = "admin"
+
+class AdminCreate(AdminBase):
+    password: str
+
+class AdminUserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class AdminStatusUpdate(BaseModel):
+    is_active: bool
+
+class AdminResponse(AdminBase):
+    id: int
+    is_active: bool
+    last_login: Optional[datetime] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+# For backward compatibility
+class AdminUser(AdminResponse):
+    pass
+
 # ========== PRODUCT SCHEMAS ==========
 class CoffeeProductBase(BaseModel):
     name: str
@@ -36,7 +87,6 @@ class CoffeeProduct(CoffeeProductBase):
     updated_at: Optional[datetime] = None
     
     class Config:
-        orm_mode = True
         from_attributes = True
 
 # ========== CART SCHEMAS ==========
@@ -56,7 +106,6 @@ class CartItem(CartItemBase):
     created_at: Optional[datetime] = None
     
     class Config:
-        orm_mode = True
         from_attributes = True
 
 # ========== ORDER SCHEMAS ==========
@@ -84,6 +133,9 @@ class OrderUpdate(BaseModel):
     payment_status: Optional[str] = None
     admin_notes: Optional[str] = None
 
+class OrderStatusUpdate(BaseModel):
+    status: str
+
 class Order(OrderBase):
     id: int
     order_number: str
@@ -96,48 +148,7 @@ class Order(OrderBase):
     updated_at: Optional[datetime] = None
     
     class Config:
-        orm_mode = True
         from_attributes = True
-
-# ========== ADMIN SCHEMAS ==========
-class AdminUserBase(BaseModel):
-    email: EmailStr
-    full_name: str
-    role: str = "admin"
-
-class AdminUserCreate(AdminUserBase):
-    password: str
-
-class AdminUserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    full_name: Optional[str] = None
-    password: Optional[str] = None
-    role: Optional[str] = None
-    is_active: Optional[bool] = None
-
-class AdminUserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class AdminUser(AdminUserBase):
-    id: int
-    is_active: bool = True
-    last_login: Optional[datetime] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    
-    class Config:
-        orm_mode = True
-        from_attributes = True
-
-# ========== TOKEN SCHEMAS ==========
-class TokenData(BaseModel):
-    email: Optional[str] = None
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    admin: Optional[Dict[str, Any]] = None
 
 # ========== DASHBOARD SCHEMAS ==========
 class DashboardStats(BaseModel):
@@ -148,6 +159,11 @@ class DashboardStats(BaseModel):
     completed_orders: int
     today_orders: int
     today_revenue: float
+
+class OrderStats(BaseModel):
+    date: str
+    orders: int
+    revenue: float
 
 # ========== KHQR PAYMENT SCHEMAS ==========
 class KHQRRequest(BaseModel):
@@ -165,3 +181,18 @@ class PaymentStatusResponse(BaseModel):
     order_number: str
     payment_status: str
     transaction_data: Dict[str, Any]
+
+# ========== ANALYTICS SCHEMAS ==========
+class SalesAnalytics(BaseModel):
+    period: str
+    date: Optional[str] = None
+    week: Optional[str] = None
+    month: Optional[str] = None
+    order_count: int
+    total_revenue: float
+
+class TopProduct(BaseModel):
+    name: str
+    category: str
+    sold_count: int
+    revenue: float
